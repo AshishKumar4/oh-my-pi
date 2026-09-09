@@ -570,11 +570,16 @@ export function classify(error: unknown, api?: Api): number {
 			) {
 				linkKinds |= Flag.UsageLimit;
 			}
-			if (code === "overloaded_error" || code === "rate_limit_error") {
+			// A Cloudflare AI Gateway 2009 is a rate rejection wearing a 401, so it
+			// belongs in the transient lane rather than the auth lane whatever
+			// shape the transport gave the error.
+			const cloudflareGatewayThrottle = isCloudflareAiGatewayThrottleText(link.message);
+			if (code === "overloaded_error" || code === "rate_limit_error" || cloudflareGatewayThrottle) {
 				linkKinds |= Flag.Transient;
 			}
 			if (
 				(codeStatus === 401 || codeStatus === 403) &&
+				!cloudflareGatewayThrottle &&
 				!(codeStatus === 403 && parseRateLimitReason(link.message) === "CONCURRENT_LIMIT")
 			) {
 				linkKinds |= Flag.AuthFailed;

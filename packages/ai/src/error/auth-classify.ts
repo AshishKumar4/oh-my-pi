@@ -1,7 +1,7 @@
 import { extractHttpStatusFromError } from "@oh-my-pi/pi-utils";
 import { isAccountPolicyError, isClinePassSurfaceGateMessage, isOAuthExpiry, isUsageLimit } from "./flags";
 import { OAuthError } from "./oauth";
-import { isConcurrencyCapExclusion, isUsageLimitOutcome } from "./rate-limit";
+import { isCloudflareAiGatewayThrottleText, isConcurrencyCapExclusion, isUsageLimitOutcome } from "./rate-limit";
 
 /**
  * Whether an OAuth refresh failure is definitive (the credential must be
@@ -49,6 +49,10 @@ export function isAuthRetryableError(error: unknown): boolean {
 	// A Cline surface-gate 403 is per-model client policy, not a credential
 	// problem: sibling keys fail identically, so rotation only burns them.
 	if (isClinePassSurfaceGateMessage(message)) return false;
+	// Cloudflare AI Gateway answers an over-rate request with 401 and its own
+	// `AiGatewayError` 2009: rotating credentials cannot clear a rate window, so
+	// this stays in the upstream-backoff lane like any other rate limit.
+	if (isCloudflareAiGatewayThrottleText(message)) return false;
 	if (status === 401 || status === 403) return true;
 	return isUsageLimitOutcome(status, message);
 }

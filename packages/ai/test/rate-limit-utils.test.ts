@@ -679,6 +679,32 @@ describe("isUsageLimitOutcome", () => {
 		expect(isUsageLimitOutcome(429, message)).toBe(false);
 		expect(isUsageLimit(Object.assign(new Error(message), { status: 429 }))).toBe(false);
 	});
+
+	it("treats Cloudflare AI Gateway 2009 as a transient throttle, not an auth failure", () => {
+		const body =
+			'401 {"success":false,"result":[],"messages":[],"error":[{"code":2009,"message":"Unauthorized"}],"name":"AiGatewayError","httpCode":401,"internalCode":2009,"message":"Unauthorized","description":"Unauthorized"}';
+		expect(parseRateLimitReason(body)).toBe("RATE_LIMIT_EXCEEDED");
+		expect(isUsageLimitOutcome(401, body)).toBe(false);
+		const id = classify(Object.assign(new Error(body), { status: 401 }));
+		expect(is(id, Flag.Transient)).toBe(true);
+		expect(is(id, Flag.AuthFailed)).toBe(false);
+		expect(retriable(id)).toBe(true);
+		// The OpenAI-compatible transport wraps the same response in a typed
+		// error, whose own 401 arm must make the same call.
+		const typed = classify(new ProviderHttpError(body, 401));
+		expect(is(typed, Flag.Transient)).toBe(true);
+		expect(is(typed, Flag.AuthFailed)).toBe(false);
+		expect(retriable(typed)).toBe(true);
+	});
+
+	it("keeps a plain 401 an auth failure", () => {
+		const body = '401 {"error":"Unauthorized","message":"Invalid API key"}';
+		const id = classify(Object.assign(new Error(body), { status: 401 }));
+		expect(is(id, Flag.AuthFailed)).toBe(true);
+		expect(retriable(id)).toBe(false);
+		const typed = classify(new ProviderHttpError(body, 401));
+		expect(is(typed, Flag.AuthFailed)).toBe(true);
+	});
 });
 
 describe("calculateRateLimitBackoffMs", () => {
@@ -718,23 +744,5 @@ describe("is402BillingCapBody", () => {
 	it("returns false for non-quota informative bodies", () => {
 		expect(is402BillingCapBody("A subscription is required for this endpoint")).toBe(false);
 		expect(is402BillingCapBody("Rate limit exceeded, too many requests")).toBe(false);
-	});
-
-	it("treats Cloudflare AI Gateway 2009 as a transient throttle, not an auth failure", () => {
-		const body =
-			'401 {"success":false,"result":[],"messages":[],"error":[{"code":2009,"message":"Unauthorized"}],"name":"AiGatewayError","httpCode":401,"internalCode":2009,"message":"Unauthorized","description":"Unauthorized"}';
-		expect(parseRateLimitReason(body)).toBe("RATE_LIMIT_EXCEEDED");
-		expect(isUsageLimitOutcome(401, body)).toBe(false);
-		const id = classify(Object.assign(new Error(body), { status: 401 }));
-		expect(is(id, Flag.Transient)).toBe(true);
-		expect(is(id, Flag.AuthFailed)).toBe(false);
-		expect(retriable(id)).toBe(true);
-	});
-
-	it("keeps a plain 401 an auth failure", () => {
-		const body = '401 {"error":"Unauthorized","message":"Invalid API key"}';
-		const id = classify(Object.assign(new Error(body), { status: 401 }));
-		expect(is(id, Flag.AuthFailed)).toBe(true);
-		expect(retriable(id)).toBe(false);
 	});
 });

@@ -300,6 +300,83 @@ describe("streamSimple resolver auth retry", () => {
 		]);
 	});
 
+	// Cloudflare AI Gateway rejects an over-rate request with 401 and its own
+	// `AiGatewayError` 2009. Rotating gateway credentials cannot clear a rate
+	// window, so neither the thrown path nor the error-event path may resolve a
+	// replacement key.
+	const gatewayThrottleBody =
+		'401 {"success":false,"result":[],"messages":[],"error":[{"code":2009,"message":"Unauthorized"}],"name":"AiGatewayError","httpCode":401,"internalCode":2009,"message":"Unauthorized"}';
+
+	it("surfaces a thrown Cloudflare gateway throttle without rotating credentials", async () => {
+		const keys: unknown[] = [];
+		const contexts: ApiKeyResolveContext[] = [];
+		const throttle = Object.assign(new Error(gatewayThrottleBody), { status: 401 });
+		registerCustomApi(
+			API,
+			(_model: Model<Api>, _context: Context, options?: SimpleStreamOptions) => {
+				pushKey(keys, options);
+				const stream = new AssistantMessageEventStream();
+				queueMicrotask(() => stream.fail(throttle));
+				return stream;
+			},
+			SOURCE_ID,
+		);
+
+		const stream = streamSimple(model(), context, {
+			apiKey: async ctx => {
+				contexts.push(ctx);
+				return ctx.error === undefined ? "old-key" : ctx.lastChance ? "sibling-key" : "refresh-key";
+			},
+		});
+		await expect(
+			(async () => {
+				for await (const _event of stream) {
+					// drain
+				}
+			})(),
+		).rejects.toBe(throttle);
+
+		expect(keys).toEqual(["old-key"]);
+		expect(contexts.map(ctx => ({ lastChance: ctx.lastChance, hasError: ctx.error !== undefined }))).toEqual([
+			{ lastChance: false, hasError: false },
+		]);
+	});
+
+	it("surfaces a Cloudflare gateway throttle error event without rotating credentials", async () => {
+		const keys: unknown[] = [];
+		const contexts: ApiKeyResolveContext[] = [];
+		registerCustomApi(
+			API,
+			(_model: Model<Api>, _context: Context, options?: SimpleStreamOptions) => {
+				pushKey(keys, options);
+				const stream = new AssistantMessageEventStream();
+				queueMicrotask(() => {
+					stream.push({ type: "start", partial: assistant() });
+					stream.push({
+						type: "error",
+						reason: "error",
+						error: assistantError(gatewayThrottleBody, 401),
+					});
+				});
+				return stream;
+			},
+			SOURCE_ID,
+		);
+
+		const stream = streamSimple(model(), context, {
+			apiKey: async ctx => {
+				contexts.push(ctx);
+				return ctx.error === undefined ? "old-key" : "new-key";
+			},
+		});
+		for await (const _event of stream) {
+			// drain
+		}
+
+		expect(keys).toEqual(["old-key"]);
+		expect(contexts.map(ctx => ctx.error !== undefined)).toEqual([false]);
+	});
+
 	it("buffers the start event and retries on a 401 error event before content", async () => {
 		const keys: unknown[] = [];
 		const eventTypes: string[] = [];

@@ -88,6 +88,19 @@ describe("isAuthRetryableError", () => {
 		// A generic (non-account) 429 rate limit is NOT rotatable — switching
 		// credentials won't help an org/global limit.
 		expect(isAuthRetryableError(Object.assign(new Error("429 too many requests"), { status: 429 }))).toBe(false);
+		// Cloudflare AI Gateway serves an over-rate request as 401 + `AiGatewayError`
+		// 2009. Rotating gateway credentials cannot clear a rate window, so this
+		// must stay in the backoff lane despite the 401.
+		expect(
+			isAuthRetryableError(
+				Object.assign(
+					new Error(
+						'401 {"success":false,"error":[{"code":2009,"message":"Unauthorized"}],"name":"AiGatewayError","httpCode":401,"internalCode":2009}',
+					),
+					{ status: 401 },
+				),
+			),
+		).toBe(false);
 		expect(isAuthRetryableError("Error: 401 unauthorized")).toBe(true);
 		expect(isAuthRetryableError("Encountered invalidated oauth token for user, failing request")).toBe(true);
 		// xAI SuperGrok surfaces account exhaustion as 403 + "run out of credits" /
