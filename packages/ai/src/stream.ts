@@ -20,7 +20,7 @@ import { getCustomApi } from "./api-registry";
 import { createAuthRetryKeyState, isApiKeyResolver, resolveNextAuthRetryKey } from "./auth-retry";
 import * as AIError from "./error";
 import { ProviderHttpError } from "./error";
-import { isConcurrencyCapExclusion, isUsageLimitOutcome } from "./error/rate-limit";
+import { isCloudflareAiGatewayThrottleText, isConcurrencyCapExclusion, isUsageLimitOutcome } from "./error/rate-limit";
 import type { BedrockOptions } from "./providers/amazon-bedrock";
 import type { AnthropicOptions } from "./providers/anthropic";
 import type { MessageCreateParamsStreaming } from "./providers/anthropic-wire";
@@ -1123,6 +1123,10 @@ function isRetryableUpstreamError(
 	// classify as RATE_LIMIT_EXCEEDED in `parseRateLimitReason` and stay in the
 	// provider's own backoff layer instead of burning siblings.
 	if (AIError.isCodexChatGPTAccountPolicyError(error, model.provider, model.id)) return true;
+	// Cloudflare AI Gateway serves its rate rejection as 401 + AiGatewayError
+	// 2009; rotating gateway credentials cannot clear a rate window, so keep it
+	// in the provider backoff layer instead of burning every sibling key.
+	if (isCloudflareAiGatewayThrottleText(message)) return false;
 	if (status === 401 || (status === 403 && !isConcurrencyCapExclusion(status, message))) return true;
 	return isUsageLimitOutcome(status, message);
 }

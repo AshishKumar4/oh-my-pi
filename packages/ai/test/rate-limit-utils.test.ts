@@ -719,4 +719,22 @@ describe("is402BillingCapBody", () => {
 		expect(is402BillingCapBody("A subscription is required for this endpoint")).toBe(false);
 		expect(is402BillingCapBody("Rate limit exceeded, too many requests")).toBe(false);
 	});
+
+	it("treats Cloudflare AI Gateway 2009 as a transient throttle, not an auth failure", () => {
+		const body =
+			'401 {"success":false,"result":[],"messages":[],"error":[{"code":2009,"message":"Unauthorized"}],"name":"AiGatewayError","httpCode":401,"internalCode":2009,"message":"Unauthorized","description":"Unauthorized"}';
+		expect(parseRateLimitReason(body)).toBe("RATE_LIMIT_EXCEEDED");
+		expect(isUsageLimitOutcome(401, body)).toBe(false);
+		const id = classify(Object.assign(new Error(body), { status: 401 }));
+		expect(is(id, Flag.Transient)).toBe(true);
+		expect(is(id, Flag.AuthFailed)).toBe(false);
+		expect(retriable(id)).toBe(true);
+	});
+
+	it("keeps a plain 401 an auth failure", () => {
+		const body = '401 {"error":"Unauthorized","message":"Invalid API key"}';
+		const id = classify(Object.assign(new Error(body), { status: 401 }));
+		expect(is(id, Flag.AuthFailed)).toBe(true);
+		expect(retriable(id)).toBe(false);
+	});
 });

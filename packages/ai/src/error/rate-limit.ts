@@ -100,6 +100,22 @@ export function isDashScopeTokenLimitText(errorMessage: string): boolean {
 	);
 }
 
+/**
+ * Cloudflare AI Gateway rejects over-rate requests with HTTP 401 and its own
+ * `AiGatewayError` code 2009 ("Unauthorized") instead of a 429, so the wire
+ * shape is indistinguishable from a bad token by status alone. Measured on
+ * `workers-ai/@cf/zai-org/glm-5.3` with one credential against one account:
+ * 3/3 success at 40s request spacing, 1/3 at ~4s spacing, and the same
+ * credential serves `glm-5.3-flash` throughout. Rotating gateway keys cannot
+ * clear a rate window, so this is a shed-and-backoff throttle: retry the same
+ * credential instead of burning siblings and falling through the model chain.
+ */
+export function isCloudflareAiGatewayThrottleText(errorMessage: string | undefined): boolean {
+	if (!errorMessage) return false;
+	if (!/AiGatewayError/.test(errorMessage)) return false;
+	return /"(?:internalCode|code)"\s*:\s*2009\b/.test(errorMessage);
+}
+
 const GOOGLE_RPC_ERROR_INFO_TYPE = "type.googleapis.com/google.rpc.ErrorInfo";
 const ANTIGRAVITY_MODEL_QUOTA_PATTERN = /\bexhausted your capacity on this model\b/i;
 const LONG_RATE_LIMIT_DELAY_MS = 5 * 60 * 1000;
@@ -179,6 +195,7 @@ function isQuotaExhaustedReason(reason: RateLimitReason): boolean {
 export function parseRateLimitReason(errorMessage: string): RateLimitReason {
 	const structuredReason = parseGoogleRpcRateLimitReason(errorMessage);
 	if (structuredReason !== undefined) return structuredReason;
+	if (isCloudflareAiGatewayThrottleText(errorMessage)) return "RATE_LIMIT_EXCEEDED";
 	const lowerWithStatus = errorMessage.toLowerCase();
 	const lower = lowerWithStatus.replace(RESOURCE_EXHAUSTED_PATTERN, "");
 	const hasResourceExhaustedStatus = lower !== lowerWithStatus;

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Cloudflare AI Gateway request-rate rejections, which arrive as `401` with `AiGatewayError` code 2009, now back off instead of rotating gateway credentials: rotating cannot clear a rate window, and a plain `401` still counts as an auth failure.
+
 ## [18.1.15] - 2026-09-08
 
 ### Fixed

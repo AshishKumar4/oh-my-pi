@@ -10,6 +10,7 @@ import {
 import {
 	is402BillingCapBody,
 	isAccountScopedCapText,
+	isCloudflareAiGatewayThrottleText,
 	isDashScopeTokenLimitText,
 	isOpaqueStatusBody,
 	isUsageLimitStatus,
@@ -455,7 +456,12 @@ function classifyText(
 		) {
 			kinds |= Flag.AccountPolicy | Flag.ContentBlocked;
 		}
-		if (isAuthFailureText(errorMessage)) kinds |= Flag.AuthFailed;
+		// Cloudflare AI Gateway's rate rejection arrives as 401 + AiGatewayError
+		// 2009, whose "Unauthorized" wording would otherwise read as a hard auth
+		// failure and rotate gateway keys that cannot clear a rate window.
+		const cloudflareGatewayThrottle = isCloudflareAiGatewayThrottleText(errorMessage);
+		if (cloudflareGatewayThrottle) kinds |= Flag.Transient;
+		if (isAuthFailureText(errorMessage) && !cloudflareGatewayThrottle) kinds |= Flag.AuthFailed;
 
 		const statusClean = errorStatus ? errorStatus : (status({ message: errorMessage }) ?? undefined);
 		const cleanMessage = errorMessage;
