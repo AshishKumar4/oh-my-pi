@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A stale Anthropic tier block (`tier:fable`, `tier:mythos`) is now cleared once a live usage report shows headroom on both the tier row and the shared windows, instead of idling a usable account until the reported reset ([#11328](https://github.com/can1357/oh-my-pi/pull/11328) by [@AshishKumar4](https://github.com/AshishKumar4)).
+
 ## [18.1.15] - 2026-09-08
 
 ### Fixed
