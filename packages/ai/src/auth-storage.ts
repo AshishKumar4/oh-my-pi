@@ -6629,11 +6629,12 @@ export class AuthStorage {
 	 * Whether a fresh report could lift what currently blocks this credential.
 	 *
 	 * A strategy that names healable scopes can only vouch for those scopes, so
-	 * clearing one frees the credential exactly when the deadline it sets is
-	 * the one holding it. An unscoped block — an Opus/Sonnet usage limit, a
-	 * refresh failure — outlasts the scope, so a probe cannot change the
-	 * outcome and must not be spent. Codex heals through its meter metadata
-	 * rather than named scopes, so its blocks always qualify.
+	 * a live unscoped block — an Opus/Sonnet usage limit, a refresh failure —
+	 * keeps the credential unusable whatever the report says about a tier. A
+	 * probe then cannot change the outcome and must not be spent; the tier scope
+	 * heals on a later pass, once the block that actually holds the credential
+	 * has lifted. Codex heals through its meter metadata rather than named
+	 * scopes, so its blocks always qualify.
 	 */
 	#blockedCredentialCanHeal(
 		provider: Provider,
@@ -6643,10 +6644,8 @@ export class AuthStorage {
 	): boolean {
 		if (!this.#supportsUsageBlockHealing(provider)) return false;
 		if (this.#rankingStrategyResolver?.(provider)?.healableBlockScopes === undefined) return true;
-		const blockedUntil = this.#getCredentialBlockedUntil(provider, providerKey, credentialIndex, blockScopeOrScopes);
-		if (blockedUntil === undefined) return false;
-		const unscopedBlockedUntil = this.#getCredentialBlockedUntil(provider, providerKey, credentialIndex);
-		return unscopedBlockedUntil === undefined || blockedUntil > unscopedBlockedUntil;
+		if (this.#getCredentialBlockedUntil(provider, providerKey, credentialIndex) !== undefined) return false;
+		return this.#getCredentialBlockedUntil(provider, providerKey, credentialIndex, blockScopeOrScopes) !== undefined;
 	}
 
 	/**
@@ -6663,6 +6662,10 @@ export class AuthStorage {
 		if (credentialIndex < 0) return;
 		const strategy = this.#rankingStrategyResolver?.(provider);
 		if (provider !== "openai-codex") {
+			// Only a live report proves recovery. A broker can serve its retained
+			// last-good report for hours after `/usage` starts failing, and those
+			// healthy limits describe the account before the 429 that blocked it.
+			if (!Number.isFinite(report.fetchedAt) || Date.now() - report.fetchedAt > USAGE_REPORT_TTL_MS) return;
 			for (const { blockScope, limits } of strategy?.healableBlockScopes?.(report) ?? []) {
 				if (limits.length === 0 || this.#isUsageLimitReached(limits)) continue;
 				this.#clearHealedBlockScope(provider, providerKey, credentialId, credentialIndex, blockScope);

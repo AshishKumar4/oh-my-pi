@@ -39,12 +39,26 @@ function tierLimit(tier: string, usedFraction: number): UsageLimit {
 	};
 }
 
-function claudeReport(limits: UsageLimit[]): UsageReport {
+function claudeReport(limits: UsageLimit[], fetchedAt = Date.now()): UsageReport {
+	return {
+		provider: "anthropic",
+		fetchedAt,
+		limits,
+		metadata: { accountId: "account-1" },
+	};
+}
+
+/**
+ * A sibling that can serve but has nearly nothing left, so credential ranking
+ * prefers the blocked-then-healed account whenever the block actually lifts.
+ * That makes `getApiKey` a direct read of the healing outcome.
+ */
+function nearlySpentSiblingReport(): UsageReport {
 	return {
 		provider: "anthropic",
 		fetchedAt: Date.now(),
-		limits,
-		metadata: { accountId: "account-1" },
+		limits: [sharedLimit("5h", "5h", 0.8), sharedLimit("7d", "7d", 0.97), tierLimit("fable", 0.97)],
+		metadata: { accountId: "account-2" },
 	};
 }
 
@@ -64,10 +78,12 @@ interface HealHarness {
 	clearedScopes: string[];
 	/** Usage requests the selection path spent while the credential was blocked. */
 	probeCount: () => number;
+	/** Persisted blocks, keyed `credentialId:blockScope`, so a test can add one. */
+	blocks: Map<string, number>;
 }
 
 function makeHarness(report: UsageReport, blockScope = "tier:fable"): HealHarness {
-	const rows = [oauthRow(1)];
+	const rows = [oauthRow(1), oauthRow(2)];
 	const cache = new Map<string, { value: string; expiresAtSec: number }>();
 	const blocks = new Map<string, number>();
 	blocks.set(`1:${blockScope}`, Date.now() + 3 * 24 * 60 * 60_000);
@@ -102,7 +118,9 @@ function makeHarness(report: UsageReport, blockScope = "tier:fable"): HealHarnes
 	};
 	const usageProvider: UsageProvider = {
 		id: "anthropic",
-		fetchUsage: async () => {
+		fetchUsage: async params => {
+			const access = params.credential.type === "oauth" ? params.credential.accessToken : undefined;
+			if (access === "access-2") return nearlySpentSiblingReport();
 			probes += 1;
 			return report;
 		},
@@ -112,7 +130,7 @@ function makeHarness(report: UsageReport, blockScope = "tier:fable"): HealHarnes
 		rankingStrategyResolver: provider => (provider === "anthropic" ? claudeRankingStrategy : undefined),
 		configValueResolver: async value => value,
 	});
-	return { storage, clearedScopes, probeCount: () => probes };
+	return { storage, clearedScopes, probeCount: () => probes, blocks };
 }
 
 describe("claude usage-block healing", () => {
@@ -153,6 +171,9 @@ describe("claude usage-block healing", () => {
 		await storage.getModelUsageHealth("anthropic", { modelId: "claude-fable-5-1", reserveFraction: 0.1 });
 
 		expect(clearedScopes).toContain("tier:fable");
+		// The user-visible contract: the recovered account is selectable again,
+		// not merely reported healthy.
+		expect(await storage.getApiKey("anthropic", "s-heal", { modelId: "claude-fable-5-1" })).toBe("access-1");
 	});
 
 	it("keeps the block while the shared 5-hour window is spent", async () => {
@@ -165,6 +186,7 @@ describe("claude usage-block healing", () => {
 		await storage.getModelUsageHealth("anthropic", { modelId: "claude-fable-5-1", reserveFraction: 0.1 });
 
 		expect(clearedScopes).not.toContain("tier:fable");
+		expect(await storage.getApiKey("anthropic", "s-5h", { modelId: "claude-fable-5-1" })).toBe("access-2");
 	});
 
 	it("keeps the block when the report omits a shared gate", async () => {
@@ -179,6 +201,7 @@ describe("claude usage-block healing", () => {
 		await storage.getModelUsageHealth("anthropic", { modelId: "claude-fable-5-1", reserveFraction: 0.1 });
 
 		expect(clearedScopes).not.toContain("tier:fable");
+		expect(await storage.getApiKey("anthropic", "s-partial", { modelId: "claude-fable-5-1" })).toBe("access-2");
 	});
 
 	it("spends no usage request on a block its scopes cannot heal", async () => {
@@ -199,5 +222,43 @@ describe("claude usage-block healing", () => {
 		expect(probeCount()).toBe(0);
 		expect(clearedScopes).toEqual([]);
 		expect(health.accounts[0]?.state).toBe("depleted");
+	});
+
+	it("keeps the block when the report predates it", async () => {
+		// A broker serves its retained last-good report for hours after `/usage`
+		// starts failing; those healthy limits describe the account before the
+		// 429 that blocked it.
+		const stale = claudeReport(
+			[sharedLimit("5h", "5h", 0.1), sharedLimit("7d", "7d", 0.2), tierLimit("fable", 0)],
+			Date.now() - 60 * 60_000,
+		);
+		const { storage, clearedScopes } = makeHarness(stale);
+		storages.push(storage);
+		await storage.reload();
+
+		await storage.getModelUsageHealth("anthropic", { modelId: "claude-fable-5-1", reserveFraction: 0.1 });
+
+		expect(clearedScopes).not.toContain("tier:fable");
+		expect(await storage.getApiKey("anthropic", "s-stale", { modelId: "claude-fable-5-1" })).toBe("access-2");
+	});
+
+	it("spends no probe while an unscoped block also holds the credential", async () => {
+		// A tier block written after a global one carries the later deadline, but
+		// the global block still makes the credential unusable, so clearing the
+		// tier early buys nothing and the request must not be spent.
+		const { storage, probeCount, blocks } = makeHarness(
+			claudeReport([sharedLimit("5h", "5h", 0.1), sharedLimit("7d", "7d", 0.2), tierLimit("fable", 0)]),
+		);
+		storages.push(storage);
+		blocks.set("1:", Date.now() + 60 * 60_000);
+		await storage.reload();
+
+		const health = await storage.getModelUsageHealth("anthropic", {
+			modelId: "claude-fable-5-1",
+			reserveFraction: 0.1,
+		});
+
+		expect(probeCount()).toBe(0);
+		expect(health.accounts.find(account => account.credentialId === 1)?.state).toBe("depleted");
 	});
 });
