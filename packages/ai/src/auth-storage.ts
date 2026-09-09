@@ -1351,7 +1351,7 @@ export class AuthStorage {
 	/** Tracks the last used credential per provider for a session (used for rate-limit switching). */
 	#sessionLastCredential: Map<
 		string,
-		Map<string, { type: AuthCredential["type"]; index: number; lastUsedAtMs?: number }>
+		Map<string, { type: AuthCredential["type"]; index: number; credentialId?: number; lastUsedAtMs?: number }>
 	> = new Map();
 	/** Recent bearer fingerprints resolved for each durable OAuth row; used only for delayed usage-limit attribution. */
 	#oauthBearerFingerprints: Map<string, Map<number, string[]>> = new Map();
@@ -2112,12 +2112,12 @@ export class AuthStorage {
 	): void {
 		if (!sessionId) return;
 		const nowMs = lastUsedAtMs ?? Date.now();
+		const credentialId = this.#getStoredCredentials(provider)[index]?.id;
 		const sessionMap = this.#sessionLastCredential.get(provider) ?? new Map();
-		sessionMap.set(sessionId, { type, index, lastUsedAtMs: nowMs });
+		sessionMap.set(sessionId, { type, index, credentialId, lastUsedAtMs: nowMs });
 		this.#sessionLastCredential.set(provider, sessionMap);
 
 		try {
-			const credentialId = this.#getStoredCredentials(provider)[index]?.id;
 			if (credentialId !== undefined) {
 				const cacheKey = `${SESSION_STICKY_CACHE_PREFIX}${provider}:${sessionId}`;
 				const cacheValue = JSON.stringify({
@@ -2139,11 +2139,24 @@ export class AuthStorage {
 	#getSessionCredential(
 		provider: string,
 		sessionId: string | undefined,
-	): { type: AuthCredential["type"]; index: number; lastUsedAtMs?: number } | undefined {
+	): { type: AuthCredential["type"]; index: number; credentialId?: number; lastUsedAtMs?: number } | undefined {
 		if (!sessionId) return undefined;
 		let sessionMap = this.#sessionLastCredential.get(provider);
-		if (sessionMap?.has(sessionId)) {
-			return sessionMap.get(sessionId);
+		const live = sessionMap?.get(sessionId);
+		if (live) {
+			// Another process can add or drop rows mid-session and the pool is an
+			// index-ordered snapshot, so re-resolve the pin through its durable row
+			// id: a compacted array must not point the session at a different
+			// account, and a deleted account must not hand its slot to a sibling.
+			if (live.credentialId === undefined) return live;
+			const stored = this.#getStoredCredentials(provider);
+			const actualIndex = stored.findIndex(entry => entry.id === live.credentialId);
+			if (actualIndex === -1 || stored[actualIndex]?.credential.type !== live.type) {
+				sessionMap?.delete(sessionId);
+				return undefined;
+			}
+			live.index = actualIndex;
+			return live;
 		}
 		try {
 			const cacheKey = `${SESSION_STICKY_CACHE_PREFIX}${provider}:${sessionId}`;
@@ -2177,6 +2190,7 @@ export class AuthStorage {
 				const sessionVal = {
 					type: val.type,
 					index: val.index,
+					credentialId: val.credentialId,
 					lastUsedAtMs: val.lastUsedAtMs,
 				};
 				sessionMap.set(sessionId, sessionVal);

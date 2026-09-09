@@ -29,6 +29,10 @@ interface ExternalStore {
 	store: AuthCredentialStore;
 	/** Simulates another process committing a credential row. */
 	commitExternally: (row: StoredAuthCredential) => void;
+	/** Simulates another process deleting a credential row. */
+	removeExternally: (id: number) => void;
+	/** Blocks written through the store, keyed `credentialId:blockScope`. */
+	blocks: Map<string, number>;
 }
 
 function makeExternallyMutableStore(rows: StoredAuthCredential[]): ExternalStore {
@@ -67,8 +71,14 @@ function makeExternallyMutableStore(rows: StoredAuthCredential[]): ExternalStore
 	};
 	return {
 		store,
+		blocks,
 		commitExternally: row => {
 			rows.push(row);
+			externalCommitPending = true;
+		},
+		removeExternally: id => {
+			const at = rows.findIndex(row => row.id === id);
+			if (at >= 0) rows.splice(at, 1);
 			externalCommitPending = true;
 		},
 	};
@@ -156,5 +166,28 @@ describe("credential pool visibility across processes", () => {
 
 		// An unchanged store is a `PRAGMA data_version` read, never a re-list.
 		expect(listCalls).toBe(afterInitialLoad);
+	});
+
+	it("does not blame a sibling when another process deletes the pinned account", async () => {
+		const rows = [oauthRow(1), oauthRow(2)];
+		const { store, removeExternally, blocks } = makeExternallyMutableStore(rows);
+		const storage = new AuthStorage(store, { configValueResolver: async value => value });
+		storages.push(storage);
+		await storage.reload();
+
+		// Pin the session to the first row, the way a real turn does.
+		expect(await storage.getApiKey("anthropic", "session-1")).toBe("access-1");
+
+		// The pool is an index-ordered snapshot, so deleting the pinned row moves
+		// the sibling into its slot.
+		removeExternally(1);
+
+		const usageLimitError = Object.assign(new Error("429 usage limit reached"), { status: 429 });
+		const switched = await storage.rotateSessionCredential("anthropic", "session-1", { error: usageLimitError });
+
+		// The failure belongs to an account that is gone; the sibling that took
+		// index 0 must not be blocked for it.
+		expect(switched).toBe(false);
+		expect([...blocks.keys()].filter(key => key.startsWith("2:"))).toEqual([]);
 	});
 });
