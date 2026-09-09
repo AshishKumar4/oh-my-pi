@@ -1488,6 +1488,33 @@ export class AuthStorage {
 		return true;
 	}
 
+	/**
+	 * Adopt credentials another process committed before selecting or rotating.
+	 *
+	 * The store is shared across every omp process, but the pool is an
+	 * in-process cache refreshed only by this process's own writes. Without
+	 * this a long-running session ranks a stale pool for its whole lifetime:
+	 * `omp auth` in another terminal is invisible, rotation reports no usable
+	 * sibling while a freshly added account sits unblocked in SQLite, and the
+	 * turn degrades to the fallback chain. The auth-broker path already polls;
+	 * direct-store sessions had no equivalent.
+	 *
+	 * A poll is two cheap reads (`PRAGMA data_version` plus the auth revision)
+	 * and re-lists credentials only when another connection committed, so it
+	 * runs on every resolution rather than on a timer that would make recovery
+	 * depend on wall-clock spacing.
+	 */
+	async #adoptExternalCredentialChanges(): Promise<void> {
+		if (this.#closed || this.#store.pollExternalChanges === undefined) return;
+		try {
+			await this.pollExternalChanges();
+		} catch (error) {
+			// A failed poll must not fail credential resolution: the in-memory
+			// pool is still serviceable, just possibly stale.
+			logger.debug("External credential poll failed", { error: String(error) });
+		}
+	}
+
 	onGenerationChanged(listener: (generation: number) => void): () => void {
 		this.#generationListeners.add(listener);
 		return () => {
@@ -5955,6 +5982,7 @@ export class AuthStorage {
 
 		// Precedence: a deliberate OAuth/login credential wins, then an explicit env var,
 		// then a stored static api_key (which may be a stale broker-migrated copy) as a last resort.
+		await this.#adoptExternalCredentialChanges();
 		const oauthResolved = await this.#resolveOAuthSelection(provider, sessionId, options);
 		if (oauthResolved) {
 			return oauthResolved.apiKey;
@@ -6859,6 +6887,7 @@ export class AuthStorage {
 			signal?: AbortSignal;
 		},
 	): Promise<boolean> {
+		await this.#adoptExternalCredentialChanges();
 		const error = options?.error;
 		const status = AIError.status(error);
 		const message = error instanceof Error ? error.message : typeof error === "string" ? error : undefined;

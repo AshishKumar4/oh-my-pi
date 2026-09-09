@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A running session now picks up credentials another process committed: adding an account in a second terminal is visible to credential selection and rotation without restarting the session.
+
 ## [18.1.15] - 2026-09-08
 
 ### Fixed
