@@ -1502,7 +1502,10 @@ export class AuthStorage {
 	 * A poll is two cheap reads (`PRAGMA data_version` plus the auth revision)
 	 * and re-lists credentials only when another connection committed, so it
 	 * runs on every resolution rather than on a timer that would make recovery
-	 * depend on wall-clock spacing.
+	 * depend on wall-clock spacing. It sits on the paths that read the pool —
+	 * OAuth selection, and the two public usage-limit entry points — and is
+	 * idempotent, so a rotation reached through `markUsageLimitReached` costs
+	 * one extra `data_version` read and no second reload.
 	 */
 	async #adoptExternalCredentialChanges(): Promise<void> {
 		if (this.#closed || this.#store.pollExternalChanges === undefined) return;
@@ -4820,6 +4823,7 @@ export class AuthStorage {
 			signal?: AbortSignal;
 		},
 	): Promise<UsageLimitMarkResult> {
+		await this.#adoptExternalCredentialChanges();
 		let sessionCredential = await this.#resolveCredentialTarget(provider, sessionId, {
 			credentialId: options?.credentialId,
 			apiKey: options?.apiKey,
@@ -5161,6 +5165,7 @@ export class AuthStorage {
 		sessionId?: string,
 		options?: AuthApiKeyOptions,
 	): Promise<OAuthResolutionResult | undefined> {
+		await this.#adoptExternalCredentialChanges();
 		const credentials = this.#getCredentialsForProvider(provider)
 			.map((credential, index) => ({ credential, index }))
 			.filter((entry): entry is { credential: OAuthCredential; index: number } => entry.credential.type === "oauth");
@@ -5982,7 +5987,6 @@ export class AuthStorage {
 
 		// Precedence: a deliberate OAuth/login credential wins, then an explicit env var,
 		// then a stored static api_key (which may be a stale broker-migrated copy) as a last resort.
-		await this.#adoptExternalCredentialChanges();
 		const oauthResolved = await this.#resolveOAuthSelection(provider, sessionId, options);
 		if (oauthResolved) {
 			return oauthResolved.apiKey;

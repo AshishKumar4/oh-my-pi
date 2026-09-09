@@ -105,6 +105,38 @@ describe("credential pool visibility across processes", () => {
 		expect(await storage.getApiKey("anthropic", "session-1")).toBe("access-2");
 	});
 
+	it("selects an account another process added, with no rotation in between", async () => {
+		const rows: StoredAuthCredential[] = [];
+		const { store, commitExternally } = makeExternallyMutableStore(rows);
+		const storage = new AuthStorage(store, { configValueResolver: async value => value });
+		storages.push(storage);
+		await storage.reload();
+
+		// A session that started before any account existed.
+		expect(await storage.getApiKey("anthropic", "session-1")).toBeUndefined();
+
+		commitExternally(oauthRow(1));
+
+		// Selection alone must see the new row: no usage-limit error, no rotation.
+		expect(await storage.getApiKey("anthropic", "session-1")).toBe("access-1");
+	});
+
+	it("resolves OAuth access for an account another process added", async () => {
+		const rows: StoredAuthCredential[] = [];
+		const { store, commitExternally } = makeExternallyMutableStore(rows);
+		const storage = new AuthStorage(store, { configValueResolver: async value => value });
+		storages.push(storage);
+		await storage.reload();
+
+		// `withOAuthAccess` consumers start here rather than at `getApiKey`.
+		expect(await storage.getOAuthAccess("anthropic", "session-1")).toBeUndefined();
+
+		commitExternally(oauthRow(1));
+
+		const resolved = await storage.getOAuthAccess("anthropic", "session-1");
+		expect(resolved?.accessToken).toBe("access-1");
+	});
+
 	it("does not reload when no other process committed", async () => {
 		const rows = [oauthRow(1), oauthRow(2)];
 		const { store } = makeExternallyMutableStore(rows);

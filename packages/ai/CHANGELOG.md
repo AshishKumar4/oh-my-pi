@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- A running session now picks up credentials another process committed: adding an account in a second terminal is visible to credential selection and rotation without restarting the session.
+- A running session now picks up credentials another process committed: adding an account in a second terminal is visible to credential selection and rotation without restarting the session ([#11329](https://github.com/can1357/oh-my-pi/pull/11329) by [@AshishKumar4](https://github.com/AshishKumar4)).
 
 ## [18.1.15] - 2026-09-08
 
