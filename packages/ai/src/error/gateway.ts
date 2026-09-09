@@ -1,4 +1,5 @@
 import { isUsageLimit } from "./flags";
+import { isCloudflareAiGatewayThrottleText } from "./rate-limit";
 
 /** A gateway-facing classification of an arbitrary upstream/internal error. */
 export interface GatewayErrorClassification {
@@ -57,7 +58,10 @@ export function classifyGatewayError(err: unknown): GatewayErrorClassification {
 		// this branch the classifier falls through to the default
 		// 502/upstream_error, which is what callers saw when their account
 		// hit its cap.
-		isUsageLimit(message)
+		isUsageLimit(message) ||
+		// Cloudflare AI Gateway words its rate rejection as `Unauthorized`, so it
+		// must be recognized before the auth branch below claims it.
+		isCloudflareAiGatewayThrottleText(message)
 	) {
 		return { status: 429, type: "rate_limit_error", message };
 	}
@@ -71,6 +75,12 @@ export function classifyGatewayError(err: unknown): GatewayErrorClassification {
 }
 
 function bucketStatus(status: number, message: string): GatewayErrorClassification {
+	// Cloudflare AI Gateway serves an over-rate request as 401 with its own
+	// `AiGatewayError` 2009. Reporting that to a gateway client as an auth
+	// failure invites it to discard a working credential instead of backing off.
+	if ((status === 401 || status === 403) && isCloudflareAiGatewayThrottleText(message)) {
+		return { status: 429, type: "rate_limit_error", message };
+	}
 	if (status === 401 || status === 403) return { status, type: "authentication_error", message };
 	if (status === 429) return { status, type: "rate_limit_error", message };
 	if (status >= 400 && status < 500) return { status, type: "invalid_request_error", message };

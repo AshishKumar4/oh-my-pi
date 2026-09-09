@@ -18,6 +18,27 @@ describe("auth-gateway classifyGatewayError", () => {
 		expect(classifyGatewayError(Object.assign(new Error(""), { status: 429 })).type).toBe("rate_limit_error");
 	});
 
+	// Cloudflare AI Gateway serves an over-rate request as 401 + `AiGatewayError`
+	// 2009. A gateway client told "authentication_error" may discard a working
+	// credential, so the public response must read as a rate limit. Both the
+	// status property and the status embedded in the body reach this path.
+	it("maps a Cloudflare AI Gateway 2009 to rate_limit_error", () => {
+		const body =
+			'{"success":false,"result":[],"messages":[],"error":[{"code":2009,"message":"Unauthorized"}],"name":"AiGatewayError","httpCode":401,"internalCode":2009}';
+		const viaStatus = classifyGatewayError(Object.assign(new Error(body), { status: 401 }));
+		expect(viaStatus.status).toBe(429);
+		expect(viaStatus.type).toBe("rate_limit_error");
+
+		const viaEmbedded = classifyGatewayError(new Error(`401 ${body}`));
+		expect(viaEmbedded.status).toBe(429);
+		expect(viaEmbedded.type).toBe("rate_limit_error");
+
+		// A plain 401 still authenticates-fails.
+		expect(classifyGatewayError(Object.assign(new Error("Unauthorized"), { status: 401 })).type).toBe(
+			"authentication_error",
+		);
+	});
+
 	it("does NOT misclassify `GenerateContentRequest` 400 as rate-limited (the original bug)", () => {
 		// Verbatim shape Google emits when functionResponse.name is missing.
 		const msg =
