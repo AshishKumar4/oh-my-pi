@@ -5,11 +5,14 @@
 ### Changed
 
 - Models post-trained on a vendor harness are now served that vendor's own request surface: `claude-opus-5`, `claude-fable-5` and `claude-fable-5-1` on the Anthropic Messages API get the Claude Code shape, and `gpt-6-astra` and `gpt-5.6-sol` on the Codex route get the Codex CLI shape (tools as a namespaced `additional_tools` item, base prompt as a developer message with no top-level `instructions`, no `tool_namespaces_info` extension, namespace-qualified tool calls resolved back to the declared tool). Every other model keeps omp's native surface. The auth-gateway also accepts an opt-in harness recorder that is handed the inbound body of every `/v1/messages` and `/v1/responses` call before model resolution, so a real vendor client's surface can be captured through the gateway, and the pinned Codex client version is now `0.154.0`.
+## [18.1.17] - 2026-09-10
+
 ### Fixed
 
 - Fixed transient Python HTTP/2 stream resets and HTTP/1.1 chunked response interruptions being treated as terminal errors when forwarded by a proxy ([#11160](https://github.com/can1357/oh-my-pi/pull/11160) by [@cyriusweng](https://github.com/cyriusweng)).
 - Ollama cache hits now populate cached-token usage: `prompt_eval_cached_count` from the `/api/chat` done chunk maps to `cacheRead`, with `input` reduced to the uncached portion, so status-line `cache_turn`/`cache_hit` segments and cache-prefix audits report real hit rates instead of false misses.
 - Fixed requests that run across a price change being costed at the newer rate; peak/off-peak estimates now use the rate in effect when the request started.
+- Fixed GitHub Copilot Business seats getting HTTP 403 on every model while the same token succeeds with a Chat client identity: chat and model-policy requests now identify as `copilot-chat`, denied requests retry once as the Copilot CLI (`copilot-developer-cli`), and `COPILOT_INTEGRATION_ID` pins the `Copilot-Integration-Id` header up front; model discovery keeps the CLI identity and the 403 message names the identity and the remedies ([#11372](https://github.com/can1357/oh-my-pi/issues/11372)).
 
 ## [18.1.16] - 2026-09-09
 
