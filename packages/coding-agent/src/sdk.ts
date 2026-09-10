@@ -918,6 +918,7 @@ export interface BuildSystemPromptOptions {
 	cwd?: string;
 	customPrompt?: string;
 	appendPrompt?: string;
+	model?: Model;
 	inlineToolDescriptors?: boolean;
 	includeWorkspaceTree?: boolean;
 	/** Include the read-only security:// resource inventory entry. Default: false. */
@@ -943,6 +944,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 				options.inlineToolDescriptors ? { mode: "full" } : { mode: "compact", toolNames: toolNames ?? [] },
 			)
 		: undefined;
+	const harnessProfile = options.model === undefined ? undefined : resolveHarnessProfile(options.model);
 	return await buildSystemPromptInternal({
 		cwd: options.cwd,
 		customPrompt: options.customPrompt,
@@ -956,6 +958,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		computerEnabled: options.computerEnabled,
 		toolNames,
 		tools: promptTools,
+		...(harnessProfile && { harnessProfile }),
 	});
 }
 

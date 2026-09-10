@@ -3,7 +3,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { buildAnthropicSystemBlocks, claudeCodeSystemInstruction } from "@oh-my-pi/pi-ai";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { HARNESS_CAPTURE_SCHEMA, resetHarnessPromptCache } from "@oh-my-pi/pi-coding-agent/harness/capture";
+import { buildSystemPrompt as buildSdkSystemPrompt } from "@oh-my-pi/pi-coding-agent/sdk";
 import { buildSystemPrompt, type SystemPromptToolMetadata } from "@oh-my-pi/pi-coding-agent/system-prompt";
 import { withHarnessCacheDir } from "./helpers/harness";
 import { cleanupTempHome } from "./helpers/temp-home-cleanup";
@@ -227,5 +229,21 @@ describe("harness prompt custody", () => {
 
 		expect(systemPrompt[0]).toBe(codexText);
 		expect(systemPrompt.join("\n\n")).not.toContain(HARNESS_MAIN_BLOCK);
+	});
+
+	it("forwards the model's harness profile through the public SDK entry point", async () => {
+		writeCapture();
+
+		const profiled = await buildSdkSystemPrompt({
+			model: getBundledModel("anthropic", "claude-opus-5"),
+			cwd: dirs.root,
+		});
+		const unprofiled = await buildSdkSystemPrompt({
+			model: getBundledModel("anthropic", "claude-haiku-4-5"),
+			cwd: dirs.root,
+		});
+
+		expect(profiled.systemPrompt[0]).toBe(HARNESS_TEXT);
+		expect(unprofiled.systemPrompt[0]).toContain("§ Workflow");
 	});
 });
