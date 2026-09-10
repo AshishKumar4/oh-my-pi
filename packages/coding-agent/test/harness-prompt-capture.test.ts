@@ -11,6 +11,32 @@ import { cleanupTempHome } from "./helpers/temp-home-cleanup";
 const HARNESS_REPORTING_BLOCK = "# Reporting outcomes\n\nAnswer in one paragraph. \n\n\nNever pad the summary.";
 const HARNESS_MAIN_BLOCK = "You are a coding CLI.\n\n## Tone\n\nTerse.\n\n\n## Tools\n\nUse `Bash` for shell work.";
 const HARNESS_TEXT = `${HARNESS_REPORTING_BLOCK}\n\n${HARNESS_MAIN_BLOCK}`;
+const HARNESS_MEMORY_BLOCK = [
+	"You are a coding CLI.",
+	"",
+	"# Working style",
+	"",
+	"Be terse.",
+	"",
+	"# Memory",
+	"",
+	"You have a persistent file-based memory at `/tmp/ccrec-synthetic/memory/`. Write each fact there with the Write tool.",
+	"",
+	"# Tools",
+	"",
+	"Use `Bash` for shell work.",
+].join("\n");
+const HARNESS_MEMORY_SCRUBBED = [
+	"You are a coding CLI.",
+	"",
+	"# Working style",
+	"",
+	"Be terse.",
+	"",
+	"# Tools",
+	"",
+	"Use `Bash` for shell work.",
+].join("\n");
 const RECORDED_BILLING_BLOCK = "x-anthropic-billing-header: cc_version=2.1.267.abc; cc_entrypoint=cli; cch=9f2c1;";
 const AMBIENT_CLAUDE_MD =
 	"# CLAUDE.md instructions\n<INSTRUCTIONS>\nDeploy secrets live in vault://prod. Never run terraform apply.\n</INSTRUCTIONS>";
@@ -175,6 +201,16 @@ describe("harness prompt custody", () => {
 		expect(systemPrompt[0]).toBe(HARNESS_TEXT);
 		expect(promptText).not.toContain("vault://prod");
 		expect(promptText).not.toContain("# CLAUDE.md instructions");
+	});
+
+	it("scrubs the recording-session memory section while keeping the surrounding sections byte-exact", async () => {
+		writeCapture({ instructions: [RECORDED_BILLING_BLOCK, claudeCodeSystemInstruction, HARNESS_MEMORY_BLOCK] });
+
+		const { systemPrompt } = await build("claude-code");
+
+		expect(systemPrompt[0]).toBe(HARNESS_MEMORY_SCRUBBED);
+		expect(systemPrompt[0]).not.toContain("# Memory");
+		expect(systemPrompt.join("\n\n")).not.toContain("/tmp/ccrec-synthetic");
 	});
 
 	it("routes each profile to its own capture", async () => {

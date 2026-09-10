@@ -71,6 +71,27 @@ function stripWireOwnedLines(block: string, wireOwned: WireOwnedLeading): string
 	}
 }
 
+const SESSION_PATH_ROOTS: readonly string[] = ["/home/", "/Users/", "/tmp/", "/var/", "/private/"];
+
+function scrubSessionSections(block: string): string {
+	const boundaries: number[] = [];
+	const heading = /^# /gm;
+	for (;;) {
+		const match = heading.exec(block);
+		if (match === null) break;
+		boundaries.push(match.index);
+	}
+	if (boundaries.length === 0) return block;
+	let scrubbed = block.slice(0, boundaries[0] ?? 0);
+	for (let index = 0; index < boundaries.length; index += 1) {
+		const start = boundaries[index] ?? 0;
+		const next = boundaries[index + 1];
+		const section = block.slice(start, next ?? block.length);
+		if (!SESSION_PATH_ROOTS.some(root => section.includes(root))) scrubbed += section;
+	}
+	return scrubbed;
+}
+
 function isAmbient(block: string, ambient: readonly string[]): boolean {
 	for (const entry of ambient) {
 		const needle = entry.trim();
@@ -110,7 +131,9 @@ export function projectHarnessCapture(profile: HarnessProfile, raw: unknown): Ca
 		afterBillingHeader = false;
 		if (isAmbient(compared, ambient)) continue;
 		leading = false;
-		blocks.push(text);
+		const scrubbed = scrubSessionSections(text);
+		if (scrubbed.trim().length === 0) continue;
+		blocks.push(scrubbed);
 	}
 	if (blocks.length === 0) return { ok: false, reason: "instructions-empty" };
 	const capturedAt = capture.capturedAt === undefined ? Number.NaN : Date.parse(capture.capturedAt);
