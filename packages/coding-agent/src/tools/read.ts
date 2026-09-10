@@ -141,6 +141,7 @@ import { isResolutionDeviceName, resolutionDeviceUsage } from "./resolve";
 import { ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { xdevDocs, xdevListing } from "./xdev";
+import { type HarnessBridges, harnessParameters, harnessParams } from "../harness/bridge";
 
 export { readToolRenderer } from "./read-renderer";
 
@@ -629,6 +630,31 @@ const readSchemaWithoutMemory = type({
 
 export type ReadToolInput = typeof readSchema.infer;
 
+const claudeCodeReadSchema = type({
+	file_path: type("string").describe("absolute path to the file to read"),
+	"offset?": type("number").describe("line number to start reading from"),
+	"limit?": type("number").describe("number of lines to read"),
+	"pages?": type("string").describe("not supported"),
+});
+
+type ReadInputSchema = typeof readSchema | typeof readSchemaWithoutMemory | typeof claudeCodeReadSchema;
+
+function claudeCodeReadSelector(offset: number | undefined, limit: number | undefined): string {
+	if (offset === undefined && limit === undefined) return "";
+	const start = Math.max(1, Math.trunc(offset ?? 1));
+	return limit === undefined ? `:${start}-` : `:${start}+${Math.max(1, Math.trunc(limit))}`;
+}
+
+const READ_BRIDGES: HarnessBridges<ReadToolInput, typeof claudeCodeReadSchema> = {
+	"claude-code": {
+		parameters: claudeCodeReadSchema,
+		toParams: args => ({ path: `${args.file_path}${claudeCodeReadSelector(args.offset, args.limit)}` }),
+	},
+};
+
+const READ_PAGES_UNSUPPORTED =
+	"Read.pages is not supported: PDFs are read as text with offset/limit, and a single page as an image via `file.pdf:p<N>.png`. Retry without the field.";
+
 export interface ReadToolDetails {
 	kind?: "file" | "url";
 	truncation?: TruncationResult;
@@ -705,11 +731,11 @@ function appendRepeatReadHint(session: ToolSession, path: string, result: AgentT
  * Reads files with support for images, converted documents (via markit), and text.
  * Directories return a formatted listing with modification times.
  */
-export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
+export class ReadTool implements AgentTool<ReadInputSchema, ReadToolDetails> {
 	readonly name = "read";
 	readonly approval = (args: unknown): ToolTier => {
-		let readPath = "";
-		if (args && typeof args === "object" && "path" in args) readPath = String(args.path ?? "");
+		const rawPath = harnessParams(this.session, READ_BRIDGES, args).path;
+		let readPath = typeof rawPath === "string" ? rawPath : "";
 		if (pathTargetsSsh(readPath)) return "exec";
 		readPath = splitImageQuestionTarget(readPath).path;
 		const target = splitPathAndSel(readPath);
@@ -718,8 +744,12 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 	readonly label = "Read";
 	readonly loadMode = "essential";
 	description: string;
-	get parameters(): typeof readSchema {
-		return this.session.settings.get("memory.backend") === "off" ? readSchemaWithoutMemory : readSchema;
+	get parameters(): ReadInputSchema {
+		return harnessParameters(
+			this.session,
+			READ_BRIDGES,
+			this.session.settings.get("memory.backend") === "off" ? readSchemaWithoutMemory : readSchema,
+		);
 	}
 	readonly strict = true;
 
@@ -799,7 +829,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 
 		for (const part of parts) {
 			try {
-				const result = await this.execute("read-delimited-part", { path: part }, signal);
+				const result = await this.#executeNative("read-delimited-part", { path: part }, signal);
 				displayReadTargets.push(result.details?.suffixResolution?.to ?? part);
 				for (const block of result.content) {
 					if (block.type === "text") {
@@ -1252,6 +1282,23 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 	}
 
 	async execute(
+		toolCallId: string,
+		input: ReadParams | typeof claudeCodeReadSchema.infer,
+		signal?: AbortSignal,
+		onUpdate?: AgentToolUpdateCallback<ReadToolDetails>,
+		toolContext?: AgentToolContext,
+	): Promise<AgentToolResult<ReadToolDetails>> {
+		if ("pages" in input && input.pages !== undefined) throw new ToolError(READ_PAGES_UNSUPPORTED);
+		return this.#executeNative(
+			toolCallId,
+			harnessParams(this.session, READ_BRIDGES, input),
+			signal,
+			onUpdate,
+			toolContext,
+		);
+	}
+
+	async #executeNative(
 		toolCallId: string,
 		params: ReadParams,
 		signal?: AbortSignal,

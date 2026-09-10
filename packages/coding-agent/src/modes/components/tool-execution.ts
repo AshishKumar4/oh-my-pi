@@ -39,7 +39,7 @@ import { type AnimationFrame, trimBlankEdges } from "./transcript-container";
 
 /** Resolves the canonical renderer key while retaining the provider's wire name in message history. */
 export function toolRenderName(wireName: string, tool: AgentTool | undefined): string {
-	return tool?.name ?? wireName;
+	return tool?.persistAs ?? tool?.name ?? wireName;
 }
 type DisplaceableToolName = "hub" | "todo";
 

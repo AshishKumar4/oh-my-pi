@@ -7,6 +7,22 @@ class "anthropic" {
 			thinking-prefix-binding #true
 		}
 	}
+	// Claude Code is the harness these lineages were post-trained against, and
+	// its surface is expressible only on the Messages API (system blocks plus a
+	// flat tool array). OpenAI-shaped hosts for the same lineage keep omp's
+	// native surface.
+	on-api "anthropic-messages" {
+		family "opus" {
+			revision ">=5" {
+				harness-profile "claude-code"
+			}
+		}
+		family "fable" {
+			revision ">=5" {
+				harness-profile "claude-code"
+			}
+		}
+	}
 	on "anthropic" "cloudflare-ai-gateway" "google-vertex" {
 		family "fable" {
 			revision ">=5" {

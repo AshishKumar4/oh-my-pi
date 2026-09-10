@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Models post-trained on a vendor harness are now served that vendor's own request surface: `claude-opus-5`, `claude-fable-5` and `claude-fable-5-1` on the Anthropic Messages API get the Claude Code shape, and `gpt-6-astra` and `gpt-5.6-sol` on the Codex route get the Codex CLI shape (tools as a namespaced `additional_tools` item, base prompt as a developer message with no top-level `instructions`, no `tool_namespaces_info` extension, namespace-qualified tool calls resolved back to the declared tool). Every other model keeps omp's native surface. The auth-gateway also accepts an opt-in harness recorder that is handed the inbound body of every `/v1/messages` and `/v1/responses` call before model resolution, so a real vendor client's surface can be captured through the gateway, and the pinned Codex client version is now `0.154.0`.
+
 ## [18.1.16] - 2026-09-09
 
 ### Fixed

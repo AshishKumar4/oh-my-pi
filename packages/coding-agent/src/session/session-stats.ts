@@ -15,6 +15,7 @@ import {
 	type NonMessageTokenSource,
 } from "../modes/utils/context-usage";
 import type { ContextUsageBreakdown, SessionStats } from "./agent-session-types";
+import { harnessLabel, PromptCacheRollup } from "./prompt-cache-stats";
 import { getLatestCompactionEntry } from "./session-context";
 import type { ModelUsageEntry, SessionEntry } from "./session-entries";
 import type { SessionManager } from "./session-manager";
@@ -127,7 +128,8 @@ export class SessionStatsTracker {
 		let committedAcuCost = 0;
 		let hasCredits = false;
 		const routedModels: Record<string, number> = {};
-		const addUsage = (usage: Usage): void => {
+		const promptCache = new PromptCacheRollup();
+		const addUsage = (usage: Usage, label?: string): void => {
 			totalInput += usage.input;
 			totalOutput += usage.output;
 			totalReasoning += usage.reasoningTokens ?? 0;
@@ -143,6 +145,7 @@ export class SessionStatsTracker {
 				committedCreditCost += credits.committedCost ?? 0;
 				committedAcuCost += credits.acuCost ?? 0;
 			}
+			if (label !== undefined) promptCache.add(label, usage);
 		};
 		for (const message of state.messages) {
 			if (message.role === "assistant") {
@@ -151,7 +154,7 @@ export class SessionStatsTracker {
 				// Persisted and imported transcripts can predate usage metadata despite the current message type.
 				const usage = assistant.usage;
 				if (!usage) continue;
-				addUsage(usage);
+				addUsage(usage, harnessLabel(assistant.provider, assistant.model));
 				if (assistant.upstreamModel !== undefined) {
 					routedModels[assistant.upstreamModel] = (routedModels[assistant.upstreamModel] ?? 0) + 1;
 				}
@@ -162,7 +165,10 @@ export class SessionStatsTracker {
 				addUsage(usage);
 			}
 		}
-		for (const entry of activeModelUsageEntries(this.#host.sessionManager.getBranch())) addUsage(entry.usage);
+		for (const entry of activeModelUsageEntries(this.#host.sessionManager.getBranch())) {
+			addUsage(entry.usage, harnessLabel(entry.provider, entry.model));
+		}
+		const promptCacheByHarness = promptCache.toRecord();
 		return {
 			sessionFile: this.#host.sessionManager.getSessionFile(),
 			sessionId: this.#host.sessionId(),
@@ -191,6 +197,7 @@ export class SessionStatsTracker {
 					}
 				: undefined),
 			...(Object.keys(routedModels).length > 0 ? { routedModels } : undefined),
+			...(promptCacheByHarness !== undefined ? { promptCacheByHarness } : undefined),
 			contextUsage: this.getContextUsage(),
 		};
 	}

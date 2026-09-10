@@ -1,3 +1,5 @@
+import type { Model } from "@oh-my-pi/pi-ai";
+import { resolveHarnessProfile } from "@oh-my-pi/pi-catalog/compat/harness";
 import { classifyModel } from "@oh-my-pi/pi-catalog/identity";
 import { $env, $flag } from "@oh-my-pi/pi-utils";
 
@@ -28,6 +30,7 @@ export interface EditModeSettingsLike {
 export interface EditModeSessionLike {
 	settings: EditModeSettingsLike;
 	getActiveModelString?: () => string | undefined;
+	getActiveModel?: () => Model | undefined;
 }
 
 export function resolveEditMode(session: EditModeSessionLike): EditMode {
@@ -40,15 +43,19 @@ export function resolveEditMode(session: EditModeSessionLike): EditMode {
 
 	const settingsMode = normalizeEditMode(String(session.settings.get("edit.mode") ?? ""));
 	const mode = settingsMode ?? DEFAULT_EDIT_MODE;
-	if (mode === "hashline" && !$flag("PI_STRICT_EDIT_MODE") && activeModel) {
-		const identity = classifyModel("", activeModel, { lenient: true });
-		if (
-			identity.class === "kimi" ||
-			identity.class === "mimo" ||
-			identity.class === "deepseek" ||
-			identity.class === "stepfun"
-		) {
-			return "replace";
+	if (mode === "hashline" && !$flag("PI_STRICT_EDIT_MODE")) {
+		const model = session.getActiveModel?.();
+		if (model && resolveHarnessProfile(model) === "claude-code") return "replace";
+		if (activeModel) {
+			const identity = classifyModel("", activeModel, { lenient: true });
+			if (
+				identity.class === "kimi" ||
+				identity.class === "mimo" ||
+				identity.class === "deepseek" ||
+				identity.class === "stepfun"
+			) {
+				return "replace";
+			}
 		}
 	}
 	return mode;

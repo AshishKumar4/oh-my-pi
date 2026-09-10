@@ -53,6 +53,8 @@ export const EFFORT_TIERS: readonly string[] = [...EFFORTS, "off"];
  * forbids subagents unless the user or a skill asks.
  */
 export const DELEGATION_BIASES = ["eager", "restrained", "gated"] as const;
+
+export const HARNESS_PROFILES = ["claude-code", "codex"] as const;
 const THINKING_MODES = [
 	"effort",
 	"budget",
@@ -274,6 +276,7 @@ export const AXES: Readonly<Record<string, AxisDef>> = {
 	"delegation-bias": { key: "delegationBias", set: "catalog", shape: "scalar", values: DELEGATION_BIASES },
 	"edit-prompt-variant": { key: "editPromptVariant", set: "catalog", shape: "scalar", values: ["full", "compact"] },
 	"edit-revision": { key: "editRevision", set: "catalog", shape: "scalar" },
+	"harness-profile": { key: "harnessProfile", set: "catalog", shape: "scalar", values: HARNESS_PROFILES },
 	"input-modalities": { key: "inputModalities", set: "catalog", shape: "array", values: ["text", "image"] },
 	"limits-patch": { key: "limitsPatch", set: "catalog", shape: "object" },
 	"long-context-cost": { key: "longContext", set: "catalog", shape: "object" },

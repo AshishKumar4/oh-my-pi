@@ -1,0 +1,1 @@
+Load a skill's instructions by name and return them; `skill` is the name shown in the available skills list. `args` are not available in this build; leave the field unset and follow the loaded instructions directly.

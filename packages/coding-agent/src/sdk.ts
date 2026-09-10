@@ -27,6 +27,7 @@ import {
 	getOpenAICodexTransportDetails,
 	prewarmOpenAICodexResponses,
 } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
+import { resolveHarnessProfile } from "@oh-my-pi/pi-catalog/compat/harness";
 import { FALLBACK_DIALECT, preferredDialect } from "@oh-my-pi/pi-catalog/identity";
 import type { Component } from "@oh-my-pi/pi-tui";
 import {
@@ -3158,7 +3159,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			let appendPrompt: string | undefined = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
 			// Owned/in-band tool dialects (non-native) require the full functions-
 			// namespace catalog; native tool calling lets the compact name list suffice.
-			const nativeTools = resolveDialect(settings.get("tools.format"), agent?.state.model ?? model) === undefined;
+			const promptModel = agent?.state.model ?? model;
+			const nativeTools = resolveDialect(settings.get("tools.format"), promptModel) === undefined;
 			const promptTools = projectSystemPromptToolMetadata(
 				tools,
 				nativeTools && !inlineToolDescriptors ? { mode: "compact", toolNames } : { mode: "full" },
@@ -3214,6 +3216,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				renderMermaid: settings.get("tui.renderMermaid"),
 				reactions: agentKind === "main" && options.hasUI === true && settings.get("tui.reactions"),
 				activeRepoContext,
+				...(promptModel && { harnessProfile: resolveHarnessProfile(promptModel) }),
 			});
 
 			if (options.systemPrompt === undefined) {

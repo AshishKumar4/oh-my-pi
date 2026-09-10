@@ -45,6 +45,8 @@ import {
 	withCors,
 } from "./http";
 import type {
+	AuthGatewayHarnessRecorder,
+	AuthGatewayHarnessWireFormat,
 	AuthGatewayServerHandle,
 	AuthGatewayServerOptions,
 	AuthGatewayFormatModule as FormatModule,
@@ -67,15 +69,22 @@ export interface AuthGatewayBootOptions extends AuthGatewayServerOptions {
 	resolveModel: ModelResolver;
 	/** Optional supplier for `/v1/models` listing. Returns the full model array. */
 	listModels?: () => Iterable<Model<Api>>;
+	harnessRecorder?: AuthGatewayHarnessRecorder;
 }
 
 // `parseBind` lives in ../utils/parse-bind so the gateway and broker can't
 // drift on accepted inputs (e.g. empty hostname, IPv6 brackets).
 
-const FORMAT_ROUTES: Record<string, { module: FormatModule; label: string }> = {
+interface FormatRoute {
+	module: FormatModule;
+	label: string;
+	harness?: AuthGatewayHarnessWireFormat;
+}
+
+const FORMAT_ROUTES: Record<string, FormatRoute> = {
 	"/v1/chat/completions": { module: openaiChat, label: "openai-chat" },
-	"/v1/messages": { module: anthropicMessages, label: "anthropic-messages" },
-	"/v1/responses": { module: openaiResponses, label: "openai-responses" },
+	"/v1/messages": { module: anthropicMessages, label: "anthropic-messages", harness: "anthropic-messages" },
+	"/v1/responses": { module: openaiResponses, label: "openai-responses", harness: "openai-responses" },
 };
 
 // (passthrough fast-path removed — it bypassed pi-ai provider logic, in
@@ -375,7 +384,7 @@ function mirrorRequestAbort(req: Request): AbortController {
 // (handlePassthrough removed — see note above.)
 
 async function handleFormatEndpoint(
-	route: { module: FormatModule; label: string },
+	route: FormatRoute,
 	bootOpts: AuthGatewayBootOptions,
 	req: Request,
 	peer: string,
@@ -393,6 +402,15 @@ async function handleFormatEndpoint(
 		return route.module.formatError(400, "invalid_request_error", `Invalid JSON body: ${String(error)}`);
 	}
 	if (controller.signal.aborted) return clientClosedResponse(route);
+
+	if (route.harness !== undefined && bootOpts.harnessRecorder !== undefined) {
+		try {
+			await bootOpts.harnessRecorder({ format: route.harness, body, headers: req.headers });
+		} catch (error) {
+			logger.warn("auth-gateway harness recorder failed", { format: route.label, peer, error: String(error) });
+		}
+		if (controller.signal.aborted) return clientClosedResponse(route);
+	}
 
 	// All three supported wire formats put the model id on a top-level `model`
 	// field. Read it without running the full strict schema so the route can

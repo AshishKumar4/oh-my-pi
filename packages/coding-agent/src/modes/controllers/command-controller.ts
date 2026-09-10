@@ -11,7 +11,7 @@ import {
 	type UsageReport,
 } from "@oh-my-pi/pi-ai";
 import { Loader, Markdown, padding, Spacer, Text, visibleWidth } from "@oh-my-pi/pi-tui";
-import { formatDuration, logger, Snowflake, sanitizeText } from "@oh-my-pi/pi-utils";
+import { formatDuration, formatPercent, logger, Snowflake, sanitizeText } from "@oh-my-pi/pi-utils";
 import { shouldEnableAppendOnlyContext } from "../../config/append-only-context-mode";
 import { type BashResult, isPersistentShellCdCommand } from "../../exec/bash-executor";
 import { type LoadedCustomShare, loadCustomShare } from "../../export/custom-share";
@@ -28,6 +28,7 @@ import {
 	seedAlreadyExists,
 	summarizeMentalModel,
 } from "../../hindsight";
+import { servedHarnessPrompt } from "../../harness/capture";
 import { memoryStatsUnavailableMessage, resolveMemoryBackend } from "../../memory-backend";
 import { BashExecutionComponent, bashPtyViewport } from "../../modes/components/bash-execution";
 import { BorderedLoader } from "../../modes/components/bordered-loader";
@@ -43,6 +44,7 @@ import { buildToolsMarkdown } from "../../modes/utils/tools-markdown";
 import type { AsyncJobSnapshotItem } from "../../session/agent-session";
 import type { AuthStorage, OAuthAccountIdentity } from "../../session/auth-storage";
 import type { CompactMode } from "../../session/compact-modes";
+import { promptTokenTotal } from "../../session/prompt-cache-stats";
 import type { NewSessionOptions } from "../../session/session-entries";
 import {
 	cleanSourceCheckoutIfConfigured,
@@ -56,7 +58,7 @@ import { formatActiveAccountLabel, limitMatchesActiveAccount } from "../../slash
 import { formatProviderName } from "../../slash-commands/helpers/format";
 import { outputMeta } from "../../tools/output-meta";
 import { resolveToCwd, stripOuterDoubleQuotes } from "../../tools/path-utils";
-import { replaceTabs, truncateToWidth } from "../../tools/render-utils";
+import { replaceTabs, shortenPath, truncateToWidth } from "../../tools/render-utils";
 import {
 	getChangelogPath,
 	parseChangelog,
@@ -357,6 +359,10 @@ export class CommandController {
 				providerSessionState: this.ctx.session.providerSessionState,
 			});
 			info += renderProviderSection(providerDetails, theme);
+			const harness = servedHarnessPrompt(model);
+			if (harness !== undefined) {
+				info += `${theme.fg("dim", "Harness Prompt:")} ${replaceTabs(sanitizeText(shortenPath(harness.path)))} ${theme.fg("dim", `(${replaceTabs(sanitizeText(harness.clientVersion))})`)}\n`;
+			}
 			if (stats.routedModels !== undefined) {
 				const routed = Object.entries(stats.routedModels)
 					.sort(([aId, aCount], [bId, bCount]) => bCount - aCount || aId.localeCompare(bId))
@@ -392,6 +398,12 @@ export class CommandController {
 			info += `${theme.fg("dim", "Cache Write:")} ${stats.tokens.cacheWrite.toLocaleString()}\n`;
 		}
 		info += `${theme.fg("dim", "Total:")} ${stats.tokens.total.toLocaleString()}\n`;
+		if (stats.promptCacheByHarness !== undefined) {
+			for (const [label, entry] of Object.entries(stats.promptCacheByHarness)) {
+				const prompt = promptTokenTotal(entry);
+				info += `${theme.fg("dim", `Cache Hit (${label}):`)} ${formatPercent(entry.hitPct / 100)} ${theme.fg("dim", `${entry.cacheRead.toLocaleString()}/${prompt.toLocaleString()} over ${entry.requests.toLocaleString()} req`)}\n`;
+			}
+		}
 
 		if (stats.cost > 0 || normalizedPremiumRequests > 0 || stats.credits !== undefined) {
 			info += `\n${theme.bold("Cost")}\n`;

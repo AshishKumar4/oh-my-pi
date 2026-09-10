@@ -33,6 +33,7 @@ import {
 import { prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { ExtensionUISelectItem } from "../extensibility/extensions";
+import { type HarnessBridges, type HarnessSchemaBridge, harnessParameters, harnessParams } from "../harness/bridge";
 import { getMarkdownTheme, type Theme, theme } from "../modes/theme/theme";
 import askDescription from "../prompts/tools/ask.md" with { type: "text" };
 import { vocalizer } from "../tts/vocalizer";
@@ -81,6 +82,46 @@ const askSchema = arkType({
 
 export type AskToolInput = typeof askSchema.infer;
 
+const claudeCodeAskSchema = arkType({
+	questions: arkType({
+		question: arkType("string").describe("question text"),
+		header: arkType("string").describe("short display chip (max 12 chars)"),
+		options: arkType({
+			label: arkType("string").describe("display label"),
+			description: arkType("string").describe("explanatory text displayed below the label"),
+			"preview?": arkType("string").describe("optional rich preview content"),
+		})
+			.array()
+			.atLeastLength(2)
+			.atMostLength(4)
+			.describe("available options"),
+		multiSelect: arkType("boolean").describe("allow multiple selections").default(false),
+	})
+		.array()
+		.atLeastLength(1)
+		.atMostLength(4)
+		.describe("questions to ask (1-4)"),
+	"answers?": arkType("Record<string, string>").describe("host-filled; leave unset"),
+	"annotations?": arkType("Record<string, object>").describe("host-filled; leave unset"),
+	"metadata?": arkType({ "source?": "string" }).describe("host-filled; leave unset"),
+});
+type ClaudeCodeAskParams = typeof claudeCodeAskSchema.inferIn;
+type AskInputSchema = typeof askSchema | typeof claudeCodeAskSchema;
+
+const CLAUDE_CODE_ASK: HarnessSchemaBridge<AskToolInput, typeof claudeCodeAskSchema> = {
+	parameters: claudeCodeAskSchema,
+	toParams: args => ({
+		questions: args.questions.map((question, index) => ({
+			id: `q${index + 1}`,
+			question: question.question,
+			header: question.header,
+			options: question.options,
+			multi: question.multiSelect,
+		})),
+	}),
+};
+const ASK_BRIDGES: HarnessBridges<AskToolInput, typeof claudeCodeAskSchema> = { "claude-code": CLAUDE_CODE_ASK };
+
 /**
  * Recover a validated `questions` payload from a persisted `ask` toolCall's
  * `arguments`. Used by `/tree` re-answer (issue #5642): selecting a past
@@ -92,8 +133,10 @@ export type AskToolInput = typeof askSchema.infer;
  */
 export function recoverAskQuestions(toolCallArguments: unknown): AskToolInput["questions"] | undefined {
 	const parsed = askSchema(toolCallArguments);
-	if (parsed instanceof arkType.errors) return undefined;
-	return parsed.questions;
+	if (!(parsed instanceof arkType.errors)) return parsed.questions;
+	const vendor = claudeCodeAskSchema(toolCallArguments);
+	if (vendor instanceof arkType.errors) return undefined;
+	return CLAUDE_CODE_ASK.toParams(vendor).questions;
 }
 
 /** Result for a single question */
@@ -763,60 +806,67 @@ function formatSingleQuestionResponse(result: {
 
 type AskParams = AskToolInput;
 
+const NO_EXAMPLES: readonly ToolExample<AskToolInput>[] = [];
+const ASK_EXAMPLES: readonly ToolExample<AskToolInput>[] = [
+	{
+		caption: "Single question",
+		call: {
+			questions: [
+				{
+					id: "auth_method",
+					question: "Which authentication method should this API use?",
+					options: [
+						{ label: "JWT", description: "Bearer tokens for stateless API clients." },
+						{ label: "OAuth2", description: "Delegated authorization with external identity providers." },
+						{
+							label: "Session cookies",
+							description: "Browser-first authentication backed by server-side sessions.",
+						},
+					],
+					recommended: 0,
+				},
+			],
+		},
+	},
+	{
+		caption: "Multiple questions",
+		call: {
+			questions: [
+				{
+					id: "storage_type",
+					question: "Which storage backend?",
+					options: [{ label: "SQLite" }, { label: "PostgreSQL" }],
+				},
+				{
+					id: "auth_method",
+					question: "Which auth method?",
+					options: [{ label: "JWT" }, { label: "Session cookies" }],
+				},
+			],
+		},
+	},
+];
+
 /**
  * Ask tool for interactive user prompting during execution.
  *
  * Allows gathering user preferences, clarifying instructions, and getting decisions
  * on implementation choices as the agent works.
  */
-export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
+export class AskTool implements AgentTool<AskInputSchema, AskToolDetails> {
 	readonly name = "ask";
 	readonly approval = "read" as const;
 	readonly label = "Ask";
 	readonly summary = "Ask the user a clarifying question";
 	readonly description: string;
-	readonly parameters = askSchema;
+	get parameters(): AskInputSchema {
+		return harnessParameters(this.session, ASK_BRIDGES, askSchema);
+	}
 	readonly strict = true;
 
-	readonly examples: readonly ToolExample<typeof askSchema.infer>[] = [
-		{
-			caption: "Single question",
-			call: {
-				questions: [
-					{
-						id: "auth_method",
-						question: "Which authentication method should this API use?",
-						options: [
-							{ label: "JWT", description: "Bearer tokens for stateless API clients." },
-							{ label: "OAuth2", description: "Delegated authorization with external identity providers." },
-							{
-								label: "Session cookies",
-								description: "Browser-first authentication backed by server-side sessions.",
-							},
-						],
-						recommended: 0,
-					},
-				],
-			},
-		},
-		{
-			caption: "Multiple questions",
-			call: {
-				questions: [
-					{
-						id: "storage_type",
-						question: "Which storage backend?",
-						options: [{ label: "SQLite" }, { label: "PostgreSQL" }],
-					},
-					{
-						id: "auth_method",
-						question: "Which auth method?",
-						options: [{ label: "JWT" }, { label: "Session cookies" }],
-					},
-				],
-			},
-		},
-	];
+	get examples(): readonly ToolExample<AskToolInput>[] {
+		return this.parameters === askSchema ? ASK_EXAMPLES : NO_EXAMPLES;
+	}
 	// Run alone in its tool batch. The interactive selector/editor is a single
 	// shared UI surface (`ExtensionUiController.showHookSelector` has no queue and
 	// overwrites `ctx.hookSelector` on each call), so two concurrent `ask` calls
@@ -849,11 +899,12 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 
 	async execute(
 		_toolCallId: string,
-		params: AskParams,
+		input: AskParams | ClaudeCodeAskParams,
 		signal?: AbortSignal,
 		_onUpdate?: AgentToolUpdateCallback<AskToolDetails>,
 		context?: AgentToolContext,
 	): Promise<AgentToolResult<AskToolDetails>> {
+		const params = harnessParams(this.session, ASK_BRIDGES, input);
 		// Headless fallback
 		if (!context?.hasUI || !context.ui) {
 			context?.abort();
@@ -1173,12 +1224,12 @@ function normalizeRenderQuestions(raw: unknown): NonNullable<AskRenderArgs["ques
 	const out: NonNullable<AskRenderArgs["questions"]> = [];
 	for (const entry of raw) {
 		if (!entry || typeof entry !== "object") continue;
-		const q = entry as Partial<NonNullable<AskRenderArgs["questions"]>[number]>;
+		const q = entry as Partial<NonNullable<AskRenderArgs["questions"]>[number]> & { multiSelect?: unknown };
 		out.push({
 			id: typeof q.id === "string" ? q.id : "?",
 			question: typeof q.question === "string" ? q.question : "",
 			options: normalizeRenderOptions(q.options) ?? [],
-			multi: q.multi === true,
+			multi: q.multi === true || q.multiSelect === true,
 		});
 	}
 	return out;

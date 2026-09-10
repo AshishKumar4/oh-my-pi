@@ -1,5 +1,6 @@
 import { scheduler } from "node:timers/promises";
 import { type } from "@oh-my-pi/omptype";
+import { resolveHarnessProfile } from "@oh-my-pi/pi-catalog/compat/harness";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import {
 	applyCodexResidencyHeader,
@@ -78,6 +79,7 @@ import {
 	type ReasoningConfig,
 	type RequestBody,
 	resolveCodexResponsesLite,
+	takeCodexToolSurface,
 	transformRequestBody,
 } from "./openai-codex/request-transformer";
 import { CodexApiError } from "./openai-codex/response-handler";
@@ -87,6 +89,7 @@ import {
 	planStableOpenAIEffort,
 } from "./openai-configuration-update";
 import type {
+	NamespaceTool,
 	ResponseComputerToolCall,
 	ResponseCustomToolCall,
 	ResponseFunctionToolCall,
@@ -1499,7 +1502,7 @@ function createCodexRequestContext(
 		clientMetadata: transformedBody.client_metadata,
 		parentTurnId: options?.parentTurnId,
 		compaction,
-		toolNamespacesInfo: options?.toolNamespacesInfo,
+		toolNamespacesInfo: resolveHarnessProfile(model) === "codex" ? undefined : options?.toolNamespacesInfo,
 	});
 	transformedBody.client_metadata = requestMetadata.clientMetadata;
 	return {
@@ -1560,8 +1563,11 @@ export async function buildTransformedCodexRequestBody(
 	// everything from `StreamOptions` rather than forwarding any of them.
 	// (#3117 — codex-rs sends none of these either.)
 	applyOpenAIServiceTier(params, options?.serviceTier, model);
+	const codexHarness = resolveHarnessProfile(model) === "codex";
 	if (context.tools && context.tools.length > 0) {
-		params.tools = convertOpenAICodexResponsesTools(context.tools, model);
+		params.tools = codexHarness
+			? buildCodexNamespaceTools(context.tools, model)
+			: convertOpenAICodexResponsesTools(context.tools, model);
 		if (options?.toolChoice) {
 			const toolChoice = normalizeCodexToolChoice(options.toolChoice, context.tools, model);
 			if (toolChoice) {
@@ -1571,10 +1577,10 @@ export async function buildTransformedCodexRequestBody(
 	}
 
 	const systemPrompts = normalizeSystemPrompts(context.systemPrompt);
-	if (systemPrompts.length > 0) {
+	if (!codexHarness && systemPrompts.length > 0) {
 		params.instructions = systemPrompts[0];
 	}
-	const developerMessages = systemPrompts.slice(1);
+	const developerMessages = codexHarness ? systemPrompts : systemPrompts.slice(1);
 	if (options?.clientMetadata && Object.keys(options.clientMetadata).length > 0) {
 		params.client_metadata = { ...options.clientMetadata };
 	}
@@ -1589,8 +1595,15 @@ export async function buildTransformedCodexRequestBody(
 	};
 
 	const body = await transformRequestBody(params, model, codexOptions, { developerMessages });
+	if (codexHarness) relocateCodexHarnessToolSurface(body);
 	applyCodexStableEffort(model, body, options);
 	return body;
+}
+
+function relocateCodexHarnessToolSurface(body: RequestBody): void {
+	if (body.tools === undefined) return;
+	const surface = takeCodexToolSurface(body);
+	body.input = body.input?.length ? [surface, ...body.input] : [surface];
 }
 
 /**
@@ -1967,7 +1980,34 @@ function isJsonWhitespaceOnly(value: string): boolean {
 	return true;
 }
 
-function createOutputBlockForItem(item: CodexEventItem): CodexOutputBlock | null {
+export function buildCodexHarnessToolNames(
+	model: Model<"openai-codex-responses">,
+	tools: Tool[] | undefined,
+): ReadonlyMap<string, string> | undefined {
+	if (resolveHarnessProfile(model) !== "codex") return undefined;
+	const fromWire = new Map<string, string>();
+	for (const tool of tools ?? []) {
+		const wireName = tool.customWireName;
+		if (wireName === undefined || wireName === tool.name) continue;
+		fromWire.set(wireName, tool.name);
+	}
+	return fromWire.size > 0 ? fromWire : undefined;
+}
+
+export function resolveCodexNamespacedToolName(
+	name: string,
+	namespace: string | undefined,
+	fromWire?: ReadonlyMap<string, string>,
+): string {
+	const prefix = namespace ? `${namespace}__` : undefined;
+	const declared = prefix && name.startsWith(prefix) ? name.slice(prefix.length) : name;
+	return fromWire?.get(declared) ?? declared;
+}
+
+function createOutputBlockForItem(
+	item: CodexEventItem,
+	fromWire: ReadonlyMap<string, string> | undefined,
+): CodexOutputBlock | null {
 	if (item.type === "reasoning") {
 		return { type: "thinking", thinking: "" };
 	}
@@ -1979,8 +2019,9 @@ function createOutputBlockForItem(item: CodexEventItem): CodexOutputBlock | null
 		return {
 			type: "toolCall",
 			id: encodeResponsesToolCallId(item.call_id, item.id),
-			name: item.name,
+			name: resolveCodexNamespacedToolName(item.name, item.namespace, fromWire),
 			arguments: {},
+			...(item.namespace ? { namespace: item.namespace } : {}),
 			[kStreamingPartialJson]: item.arguments || "",
 		};
 	}
@@ -1995,15 +2036,14 @@ function createOutputBlockForItem(item: CodexEventItem): CodexOutputBlock | null
 		};
 	}
 	if (item.type === "custom_tool_call") {
-		// Wire name flows through unchanged; the agent-loop dispatcher also
-		// matches `Tool.customWireName`. Reuse `partialJson` as the
-		// accumulation buffer for the raw input string.
+		const wireName = resolveCodexNamespacedToolName(item.name, item.namespace);
 		return {
 			type: "toolCall",
 			id: encodeResponsesToolCallId(item.call_id, item.id),
-			name: item.name,
+			name: fromWire?.get(wireName) ?? wireName,
 			arguments: { input: item.input ?? "" },
-			customWireName: item.name,
+			customWireName: wireName,
+			...(item.namespace ? { namespace: item.namespace } : {}),
 			[kStreamingPartialJson]: item.input ?? "",
 		};
 	}
@@ -2104,6 +2144,7 @@ class CodexStreamProcessor {
 	requestSetup: CodexRequestSetup;
 	requestContext: CodexRequestContext;
 	startTime: number;
+	harnessToolNames: ReadonlyMap<string, string> | undefined;
 	firstTokenTime?: number;
 
 	constructor(init: {
@@ -2115,6 +2156,7 @@ class CodexStreamProcessor {
 		requestSetup: CodexRequestSetup;
 		requestContext: CodexRequestContext;
 		startTime: number;
+		harnessToolNames: ReadonlyMap<string, string> | undefined;
 	}) {
 		this.runtime = init.runtime;
 		this.model = init.model;
@@ -2124,6 +2166,7 @@ class CodexStreamProcessor {
 		this.requestSetup = init.requestSetup;
 		this.requestContext = init.requestContext;
 		this.startTime = init.startTime;
+		this.harnessToolNames = init.harnessToolNames;
 	}
 
 	/**
@@ -2179,7 +2222,7 @@ class CodexStreamProcessor {
 			if (!firstTokenTime) firstTokenTime = performance.now();
 			const item = rawEvent.item as CodexEventItem;
 			this.runtime.currentItem = item;
-			this.runtime.currentBlock = createOutputBlockForItem(item);
+			this.runtime.currentBlock = createOutputBlockForItem(item, this.harnessToolNames);
 			let contentIndex = -1;
 			if (this.runtime.currentBlock) {
 				output.content.push(this.runtime.currentBlock);
@@ -2455,8 +2498,9 @@ class CodexStreamProcessor {
 			const toolCall: ToolCall = {
 				type: "toolCall",
 				id: encodeResponsesToolCallId(item.call_id, item.id),
-				name: item.name,
+				name: resolveCodexNamespacedToolName(item.name, item.namespace, this.harnessToolNames),
 				arguments: parseStreamingJson(item.arguments || "{}"),
+				...(item.namespace ? { namespace: item.namespace } : {}),
 			};
 			if (block?.type === "toolCall") {
 				// Persist the authoritative final args on the stored block; the throttled
@@ -2498,12 +2542,14 @@ class CodexStreamProcessor {
 		if (item.type === "custom_tool_call") {
 			const partial = block?.type === "toolCall" ? block[kStreamingPartialJson] : undefined;
 			const rawInput = partial && partial.length > 0 ? partial : (item.input ?? "");
+			const wireName = resolveCodexNamespacedToolName(item.name, item.namespace);
 			const toolCall: ToolCall = {
 				type: "toolCall",
 				id: encodeResponsesToolCallId(item.call_id, item.id),
-				name: item.name,
+				name: this.harnessToolNames?.get(wireName) ?? wireName,
 				arguments: { input: rawInput },
-				customWireName: item.name,
+				customWireName: wireName,
+				...(item.namespace ? { namespace: item.namespace } : {}),
 			};
 			if (block?.type === "toolCall") {
 				block.arguments = { input: rawInput };
@@ -3026,6 +3072,7 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 				requestSetup,
 				requestContext,
 				startTime,
+				harnessToolNames: buildCodexHarnessToolNames(model, context.tools),
 			});
 
 			const completion = await processingContext.process();
@@ -4714,45 +4761,73 @@ type CodexToolPayload =
 			format: { type: "grammar"; syntax: "lark" | "regex"; definition: string };
 	  };
 
+function convertCodexToolPayload(
+	tool: Tool,
+	model: Model<"openai-codex-responses">,
+	allowFreeform: boolean,
+	harnessNaming: boolean,
+): CodexToolPayload {
+	if (tool.native?.type === "computer" && model.supportsComputerUse === true) {
+		return { type: "computer" };
+	}
+	if (allowFreeform && tool.customFormat) {
+		return {
+			type: "custom",
+			name: tool.customWireName ?? tool.name,
+			description: tool.description || "",
+			format: {
+				type: "grammar",
+				syntax: tool.customFormat.syntax,
+				definition: compactGrammarDefinition(tool.customFormat.syntax, tool.customFormat.definition),
+			},
+		};
+	}
+	const strict = !!(!NO_STRICT && tool.strict);
+	const baseParameters = sanitizeSchemaForOpenAIResponses(toolWireSchema(tool));
+	const { schema: parameters, strict: effectiveStrict } = adaptSchemaForStrict(baseParameters, strict);
+	return {
+		type: "function",
+		name: harnessNaming && !tool.customFormat ? (tool.customWireName ?? tool.name) : tool.name,
+		description: tool.description || "",
+		parameters,
+		...(effectiveStrict ? { strict: true } : !NO_STRICT && tool.strict === false ? { strict: false } : {}),
+	};
+}
+
 /** @internal Exported for tests. */
 export function convertOpenAICodexResponsesTools(
 	tools: Tool[],
 	model: Model<"openai-codex-responses">,
 ): CodexToolPayload[] {
 	const allowFreeform = model.applyPatchToolType === "freeform";
-	const payloads: CodexToolPayload[] = [];
+	const harnessNaming = resolveHarnessProfile(model) === "codex";
+	return tools.map(tool => convertCodexToolPayload(tool, model, allowFreeform, harnessNaming));
+}
+
+type CodexAdditionalTool = NamespaceTool | CodexToolPayload;
+
+const CODEX_DEFAULT_TOOL_NAMESPACE = "functions";
+
+export function buildCodexNamespaceTools(tools: Tool[], model: Model<"openai-codex-responses">): CodexAdditionalTool[] {
+	const groups = new Map<string, NamespaceTool>();
+	const surface: CodexAdditionalTool[] = [];
 	for (const tool of tools) {
-		// Subscription models default to the function fallback. Explicit metadata
-		// remains authoritative for future Codex endpoints that implement GA computer use.
-		if (tool.native?.type === "computer" && model.supportsComputerUse === true) {
-			payloads.push({ type: "computer" });
+		const payload = convertCodexToolPayload(tool, model, true, true);
+		if (payload.type === "computer") {
+			surface.push(payload);
 			continue;
 		}
-		if (allowFreeform && tool.customFormat) {
-			payloads.push({
-				type: "custom",
-				name: tool.customWireName ?? tool.name,
-				description: tool.description || "",
-				format: {
-					type: "grammar",
-					syntax: tool.customFormat.syntax,
-					definition: compactGrammarDefinition(tool.customFormat.syntax, tool.customFormat.definition),
-				},
-			});
-			continue;
+		const name = tool.namespace?.name || CODEX_DEFAULT_TOOL_NAMESPACE;
+		let group = groups.get(name);
+		if (!group) {
+			group = { type: "namespace", name, description: "", tools: [] };
+			groups.set(name, group);
+			surface.push(group);
 		}
-		const strict = !!(!NO_STRICT && tool.strict);
-		const baseParameters = sanitizeSchemaForOpenAIResponses(toolWireSchema(tool));
-		const { schema: parameters, strict: effectiveStrict } = adaptSchemaForStrict(baseParameters, strict);
-		payloads.push({
-			type: "function",
-			name: tool.name,
-			description: tool.description || "",
-			parameters,
-			...(effectiveStrict ? { strict: true } : !NO_STRICT && tool.strict === false ? { strict: false } : {}),
-		});
+		if (!group.description && tool.namespace?.description) group.description = tool.namespace.description;
+		group.tools.push(payload);
 	}
-	return payloads;
+	return surface;
 }
 
 export class CodexWebSocketTransportError extends Error {

@@ -1038,8 +1038,8 @@ describe("Responses Lite remote compaction", () => {
 		overrides: Partial<ModelSpec<"openai-codex-responses">> = {},
 	): Model<"openai-codex-responses"> {
 		return buildModel({
-			id: "gpt-5.6-terra",
-			name: "GPT-5.6 Terra",
+			id: "gpt-6-astra",
+			name: "GPT-6 Astra",
 			api: "openai-codex-responses",
 			provider: "openai-codex",
 			baseUrl: "https://chatgpt.example/backend-api",
@@ -1327,11 +1327,16 @@ describe("Responses Lite remote compaction", () => {
 			const liveRequest = webSocket.sockets[0]?.sent[0];
 			const compactionRequest = webSocket.sockets[1]?.sent[0];
 			const compactionInput = compactionRequest?.input;
+			const liveInput = liveRequest?.input;
 			expect(fetchMock).not.toHaveBeenCalled();
 			expect(webSocket.sockets).toHaveLength(2);
 			expect(webSocket.sockets[0]?.sent).toHaveLength(1);
 			expect(webSocket.sockets[1]?.sent).toHaveLength(1);
-			expect(liveRequest?.instructions).toBe("You are a helpful assistant.");
+			expect(Array.isArray(liveInput) ? liveInput[0] : undefined).toEqual({
+				type: "message",
+				role: "developer",
+				content: [{ type: "input_text", text: "You are a helpful assistant." }],
+			});
 			expect(liveRequest?.parallel_tool_calls).toBeUndefined();
 			expect(compactionRequest?.type).toBe("response.create");
 			expect(compactionRequest?.instructions).toBeUndefined();

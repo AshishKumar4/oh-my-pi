@@ -129,7 +129,7 @@ Capability-dependent responses include `Vary: OMP-Auth-Broker-Capabilities` so i
 ### CLI
 
 ```
-omp auth-gateway serve   [--bind=host:port] [--no-auth]
+omp auth-gateway serve   [--bind=host:port] [--no-auth] [--record-harness]
 omp auth-gateway token   [--regenerate] [--json]
 omp auth-gateway status  [--json]
 omp auth-gateway check   [--strict] [--json]
@@ -138,6 +138,33 @@ omp auth-gateway check   [--strict] [--json]
 - `serve` requires `OMP_AUTH_BROKER_URL` (or `auth.broker.url` in `config.yml`) — the gateway is itself a broker client. It calls `AuthBrokerClient.fetchSnapshot()`, wraps it in `RemoteAuthCredentialStore`, and constructs an `AuthStorage` that resolves access tokens through the broker. Default bind is `127.0.0.1:4000`. The gateway token is stored at `<config-dir>/auth-gateway.token` (`0600`); `--no-auth` disables the bearer check entirely (loopback-only use).
 - `token` / `status` manage and inspect the gateway bearer token and upstream broker readiness.
 - `check` probes broker-backed credentials through the gateway store. Without `--strict` it uses provider usage probes; `--strict` also exercises each credential against its chat-completion endpoint and can consume a small amount of quota.
+- `serve --record-harness` turns on harness record mode (off by default; see below).
+
+### Harness record mode
+
+A profiled model can be served the vendor harness prompt its lineage was post-trained against instead of omp's own template, but that text is never vendored into this repo — it is read from a recording of the user's own client install, cached under `~/.omp/cache/harness/<profile>/<clientVersion>-<entrypoint>.json` (`OMP_HARNESS_CACHE_DIR` relocates the root). `serve --record-harness` is how that recording is produced: point the vendor client at the gateway and take one turn.
+
+```
+omp auth-gateway serve --no-auth --record-harness
+
+# Claude Code, in the repo you want recorded
+ANTHROPIC_BASE_URL=http://127.0.0.1:4000 ANTHROPIC_AUTH_TOKEN=recording claude
+
+# Codex
+codex -c model_provider=omp \
+      -c 'model_providers.omp.name="omp"' \
+      -c 'model_providers.omp.base_url="http://127.0.0.1:4000/v1"' \
+      -c 'model_providers.omp.wire_api="responses"' \
+      -c 'model_providers.omp.requires_openai_auth=false'
+```
+
+The token is never checked upstream, so a dummy value is enough and the capture costs no quota: recording happens before the gateway resolves a model, so the client's own model id does not have to be routable. `--no-auth` is what lets a client that sends no bearer through.
+
+Because a capture becomes the system prompt of every later session on a profiled model, `--record-harness` combined with `--no-auth` refuses to start unless the bind host is loopback — on a routable bind, any host that could reach the gateway would author those instructions. Keep the bearer check on if the gateway must be reachable. Captures are written `0600`, and a session that serves one names the file in `/model` and in the session-status overlay instead of only in the debug log.
+
+Every field of the capture comes out of the request: the profile from the route plus the client's identity block, `clientVersion`/`entrypoint` from that block (Claude Code states both in its `x-anthropic-billing-header:` system block; Codex states the entrypoint in `originator` and the version in its User-Agent), the prompt blocks and the declared tool inventory, and — under `ambient` — only the trimmed `CLAUDE.md`/`AGENTS.md` needles a recorded prompt block equals or contains, so the reader can strip them. Nothing else you typed during the run is persisted. For Codex only the first developer message is recorded: its later developer blocks state the recording machine's own memory folder, installed skills and sandbox/approval policy, which would be a false environment for any other session. The first capture a `<clientVersion>-<entrypoint>` identity produces is the one kept: a second turn, or a side-call the client makes under the same identity with its own prompt, is logged and dropped rather than overwriting it. Delete the file to re-record.
+
+A capture is only written if the coding agent's own capture reader accepts it — the recorder validates with that reader's projector rather than a second copy of its rules. Refusals are logged with a reason and write nothing: a client surface other than the profile's target (Claude Code's `sdk-cli` entrypoint, say), an empty prompt or tool surface (a title/summary side-call), or a degraded client path such as Codex's fallback-metadata requests. Only `POST /v1/messages` and `POST /v1/responses` are recorded; no other route or response is affected, and with the flag absent the gateway behaves exactly as before.
 
 ### Endpoints
 

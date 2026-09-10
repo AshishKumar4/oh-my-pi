@@ -21,6 +21,7 @@ import {
 import type { Settings } from "../config/settings";
 import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash-executor";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { type HarnessBridges, harnessParameters, harnessParams } from "../harness/bridge";
 import { InternalUrlRouter } from "../internal-urls";
 import { truncateToVisualLines } from "../modes/components/visual-truncate";
 import { highlightCode, type Theme } from "../modes/theme/theme";
@@ -335,7 +336,33 @@ const bashSchemaWithAsync = type({
 	"async?": type("boolean").describe("run in background"),
 });
 
-type BashToolSchema = typeof bashSchemaBase | typeof bashSchemaWithAsync;
+const claudeCodeBashSchema = type({
+	command: type("string").describe("command to execute"),
+	"timeout?": type("number").describe("timeout in milliseconds (max 600000)"),
+	"description?": type("string").describe("what this command does, in plain words"),
+	"run_in_background?": type("boolean").describe("run in background"),
+	"dangerouslyDisableSandbox?": type("boolean").describe("not supported"),
+});
+
+type BashToolSchema = typeof bashSchemaBase | typeof bashSchemaWithAsync | typeof claudeCodeBashSchema;
+
+const BASH_BRIDGES: HarnessBridges<BashToolInput, typeof claudeCodeBashSchema> = {
+	"claude-code": {
+		parameters: claudeCodeBashSchema,
+		toParams: args => {
+			if (args.dangerouslyDisableSandbox === true) {
+				throw new ToolError(
+					"Bash.dangerouslyDisableSandbox is not supported: approval is decided by the host, not the tool call. Retry without the field.",
+				);
+			}
+			return {
+				command: args.command,
+				...(args.timeout !== undefined && args.timeout > 0 ? { timeout: Math.ceil(args.timeout / 1000) } : {}),
+				...(args.run_in_background !== undefined ? { async: args.run_in_background } : {}),
+			};
+		},
+	},
+};
 
 export interface BashToolInput {
 	command: string;
@@ -591,7 +618,7 @@ function stripBackgroundNotice(text: string, async: BashToolDetails["async"] | u
  *
  * Executes bash commands with optional timeout and working directory.
  */
-export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSchemaWithAsync, BashToolDetails> {
+export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 	readonly name = "bash";
 	readonly approval = (args: unknown): ToolApprovalDecision => {
 		const rawCommand = (args as Partial<BashToolInput>).command;
@@ -703,7 +730,11 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			isWindows: process.platform === "win32",
 		});
 	}
-	readonly parameters: BashToolSchema;
+	get parameters(): BashToolSchema {
+		return harnessParameters(this.session, BASH_BRIDGES, this.#asyncEnabled ? bashSchemaWithAsync : bashSchemaBase);
+	}
+	readonly intent = (args: Partial<BashToolInput | typeof claudeCodeBashSchema.infer>): string | undefined =>
+		"description" in args && typeof args.description === "string" ? args.description : undefined;
 	// Non-pty calls run alongside each other (the executor isolates overlapping
 	// runs on the same shell session); pty takes over the terminal UI and must
 	// run alone.
@@ -723,7 +754,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				this.session.settings.get("bash.autoBackground.thresholdMs") ?? DEFAULT_AUTO_BACKGROUND_THRESHOLD_MS,
 			),
 		);
-		this.parameters = this.#asyncEnabled ? bashSchemaWithAsync : bashSchemaBase;
 	}
 
 	#formatResultOutput(result: BashResult | BashInteractiveResult): string {
@@ -1003,19 +1033,23 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 
 	async execute(
 		_toolCallId: string,
-		{
-			command: rawCommand,
-			env: rawEnv,
-			timeout: rawTimeout = 300,
-			cwd,
-
-			async: asyncRequested = false,
-			pty = false,
-		}: BashToolInput,
+		input: BashToolInput | typeof claudeCodeBashSchema.infer,
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<BashToolDetails>,
 		ctx?: AgentToolContext,
 	): Promise<AgentToolResult<BashToolDetails>> {
+		const params = harnessParams(this.session, BASH_BRIDGES, input);
+		if (params.async && !this.#asyncEnabled && "run_in_background" in input) {
+			throw new ToolError("Bash.run_in_background is not available: async.enabled is off in this session.");
+		}
+		const {
+			command: rawCommand,
+			env: rawEnv,
+			timeout: rawTimeout = 300,
+			async: asyncRequested = false,
+			pty = false,
+		} = params;
+		let { cwd } = params;
 		let command = rawCommand;
 		const env = normalizeBashEnv(rawEnv);
 

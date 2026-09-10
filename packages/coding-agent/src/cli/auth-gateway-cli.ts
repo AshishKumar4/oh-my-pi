@@ -31,10 +31,12 @@ import {
 	type SnapshotResponse,
 } from "@oh-my-pi/pi-ai/auth-broker";
 import { DEFAULT_AUTH_GATEWAY_BIND, startAuthGateway } from "@oh-my-pi/pi-ai/auth-gateway";
+import { isLoopbackBind, parseBind } from "@oh-my-pi/pi-ai/utils/parse-bind";
 import { type GeneratedProvider, getBundledModels } from "@oh-my-pi/pi-catalog/models";
-import { getConfigRootDir, isEnoent, logger, VERSION } from "@oh-my-pi/pi-utils";
+import { getConfigRootDir, getHarnessCacheDir, isEnoent, logger, VERSION } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { ModelRegistry } from "../config/model-registry";
+import { recordHarnessRequest } from "../harness/record";
 import { type AuthBrokerClientConfig, resolveAuthBrokerConfig } from "../session/auth-broker-config";
 
 export type AuthGatewayAction = "serve" | "token" | "status" | "check";
@@ -51,6 +53,7 @@ export interface AuthGatewayCommandArgs {
 		 * to wire token-paste plumbing into every local client.
 		 */
 		noAuth?: boolean;
+		recordHarness?: boolean;
 		/**
 		 * Strict mode for `check` — additionally exercise every credential
 		 * against its provider's chat-completion endpoint. The usage probe (run
@@ -168,7 +171,17 @@ export function indexModelsByRequestId(
 	return modelById;
 }
 
+export function assertHarnessRecordingConfined(flags: AuthGatewayCommandArgs["flags"]): void {
+	if (flags.recordHarness !== true || flags.noAuth !== true) return;
+	const bind = flags.bind ?? DEFAULT_AUTH_GATEWAY_BIND;
+	if (isLoopbackBind(parseBind(bind).hostname)) return;
+	throw new Error(
+		`\`--record-harness\` refuses to start on ${bind} with \`--no-auth\`: every capture written under ${path.join(getHarnessCacheDir(), "<profile>")} becomes the system prompt of later omp sessions on a profiled model, so any host that can reach this bind would author them. Bind loopback (e.g. \`--bind=${DEFAULT_AUTH_GATEWAY_BIND}\`) or drop \`--no-auth\`.`,
+	);
+}
+
 async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
+	assertHarnessRecordingConfined(flags);
 	const brokerConfig = await resolveAuthBrokerConfig();
 	if (!brokerConfig) {
 		throw new Error(
@@ -222,6 +235,7 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 		version: VERSION,
 		resolveModel: (id: string) => modelById.get(id),
 		listModels: () => modelById.values(),
+		...(flags.recordHarness === true && { harnessRecorder: recordHarnessRequest }),
 	});
 	process.stdout.write(`auth-gateway listening on ${handle.url}\n`);
 	if (gatewayToken) {
@@ -230,6 +244,11 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 		process.stdout.write(`auth: disabled (--no-auth) — any client can call this gateway\n`);
 	}
 	process.stdout.write(`upstream broker: ${brokerConfig.url}\n`);
+	if (flags.recordHarness === true) {
+		process.stdout.write(
+			`harness recording: on — point Claude Code (ANTHROPIC_BASE_URL) or Codex (model_provider base_url) here; captures land in ${path.join(getHarnessCacheDir(), "<profile>")}\n`,
+		);
+	}
 
 	// `serve` is long-lived: rebuild the catalog periodically so models
 	// discovered after boot become routable without a restart. A failed refresh

@@ -2263,19 +2263,21 @@ export function convertResponsesAssistantMessage<TApi extends Api>(
 				call_id: normalized.callId,
 				name: block.customWireName,
 				input: rawInput,
+				...(block.namespace ? { namespace: block.namespace } : {}),
 			} as ResponseInput[number]);
 			continue;
 		}
 		const functionName =
 			block.customWireName && !supportsCustomToolCalls
 				? resolveReplayCustomToolName(block.customWireName, customToolWireNameMap)
-				: block.name;
+				: (block.wireName ?? block.name);
 		outputItems.push({
 			type: "function_call",
 			...(itemId ? { id: itemId } : {}),
 			call_id: normalized.callId,
 			name: functionName,
 			arguments: stringifyJson(block.arguments) ?? "null",
+			...(block.namespace ? { namespace: block.namespace } : {}),
 		});
 	}
 

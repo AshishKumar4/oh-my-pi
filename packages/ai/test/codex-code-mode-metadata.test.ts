@@ -79,7 +79,7 @@ async function captureRequest(opts: Record<string, unknown>): Promise<CapturedCo
 		const sse = `${COMPLETED_EVENTS.map(event => `data: ${JSON.stringify(event)}`).join("\n\n")}\n\n`;
 		return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
 	}) as unknown as FetchImpl;
-	await streamOpenAICodexResponses(createCodexModel("gpt-5.6-sol"), CONTEXT, {
+	await streamOpenAICodexResponses(createCodexModel("gpt-5.1-codex"), CONTEXT, {
 		apiKey: createCodexTestToken(),
 		fetch: fetchMock,
 		...opts,

@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { type } from "@oh-my-pi/omptype";
 import type {
 	AgentTool,
 	AgentToolArgStream,
@@ -22,6 +23,7 @@ import {
 	type EditWriteResponse,
 } from "@oh-my-pi/pi-natives";
 import { isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
+import { type HarnessBridges, harnessParameters, harnessParams } from "../harness/bridge";
 import { resolveLocalRoot } from "../internal-urls";
 import { cachedVaultRoots, isVaultEnabled } from "../internal-urls/vault-protocol";
 import {
@@ -77,14 +79,95 @@ export * from "./schemas";
 export * from "./store";
 export { DEFAULT_EDIT_MODE, type EditMode, normalizeEditMode } from "../utils/edit-mode";
 
+const claudeCodeEditSchema = type({
+	file_path: "string",
+	old_string: "string",
+	new_string: "string",
+	replace_all: "boolean = false",
+});
+type ClaudeCodeEditParams = typeof claudeCodeEditSchema.inferIn;
+
+const REPLACE_BRIDGES: HarnessBridges<ReplaceParams, typeof claudeCodeEditSchema> = {
+	"claude-code": {
+		parameters: claudeCodeEditSchema,
+		toParams: ({ file_path, ...rest }) => ({ path: file_path, ...rest }),
+	},
+};
+
 type TInput =
 	| typeof replaceEditSchema
+	| typeof claudeCodeEditSchema
 	| typeof patchEditSchema
 	| typeof hashlineEditParamsSchema
 	| typeof applyPatchSchema
 	| typeof sloppyEditSchema;
 
-type EditParams = ReplaceParams | ReplaceBatchParams | PatchParams | HashlineParams | ApplyPatchParams | SloppyParams;
+type EditParams =
+	| ReplaceParams
+	| ClaudeCodeEditParams
+	| ReplaceBatchParams
+	| PatchParams
+	| HashlineParams
+	| ApplyPatchParams
+	| SloppyParams;
+
+class StreamedKeyRename {
+	#depth = 0;
+	#inString = false;
+	#escaped = false;
+	#expectKey = false;
+	#key: string | undefined;
+
+	constructor(
+		private readonly from: string,
+		private readonly to: string,
+	) {}
+
+	push(delta: string): string {
+		let out = "";
+		for (const ch of delta) {
+			if (this.#key !== undefined) {
+				if (this.#escaped) {
+					this.#escaped = false;
+				} else if (ch === "\\") {
+					this.#escaped = true;
+				} else if (ch === '"') {
+					out += `"${this.#key === this.from ? this.to : this.#key}"`;
+					this.#key = undefined;
+					continue;
+				}
+				this.#key += ch;
+				continue;
+			}
+			if (this.#inString) {
+				if (this.#escaped) this.#escaped = false;
+				else if (ch === "\\") this.#escaped = true;
+				else if (ch === '"') this.#inString = false;
+				out += ch;
+				continue;
+			}
+			if (ch === '"') {
+				if (this.#depth === 1 && this.#expectKey) {
+					this.#key = "";
+					continue;
+				}
+				this.#inString = true;
+			} else if (ch === "{" || ch === "[") {
+				this.#depth++;
+				this.#expectKey = ch === "{";
+			} else if (ch === "}" || ch === "]") {
+				this.#depth--;
+				this.#expectKey = false;
+			} else if (ch === ",") {
+				this.#expectKey = this.#depth === 1;
+			} else if (ch === ":") {
+				this.#expectKey = false;
+			}
+			out += ch;
+		}
+		return out;
+	}
+}
 
 const PATCH_EXAMPLES = [
 	{
@@ -372,7 +455,7 @@ export class EditTool implements AgentTool<TInput> {
 	get parameters(): TInput {
 		switch (this.mode) {
 			case "replace":
-				return replaceEditSchema;
+				return harnessParameters(this.session, REPLACE_BRIDGES, replaceEditSchema);
 			case "patch":
 				return patchEditSchema;
 			case "apply_patch":
@@ -436,6 +519,8 @@ export class EditTool implements AgentTool<TInput> {
 		// A call that arrived through the custom-tool wire streams the payload
 		// verbatim; JSON function calls stream JSON text.
 		const rawInput = init.customWireName !== undefined;
+		const rename =
+			!rawInput && this.parameters === claudeCodeEditSchema ? new StreamedKeyRename("file_path", "path") : undefined;
 		const editSession = new EditSession(getEditStore(this.session), this.#policy(rawInput), (error, batch) => {
 			if (error) {
 				logger.debug("Native edit preview failed", { error: error.message, toolCallId: init.toolCallId });
@@ -452,7 +537,7 @@ export class EditTool implements AgentTool<TInput> {
 			this.#sessions.delete(oldestId);
 		}
 		return {
-			push: delta => editSession.push(delta),
+			push: delta => editSession.push(rename ? rename.push(delta) : delta),
 			end: () => editSession.finish(),
 			cancel: () => {
 				editSession.close();
@@ -463,11 +548,12 @@ export class EditTool implements AgentTool<TInput> {
 
 	async execute(
 		toolCallId: string,
-		params: EditParams,
+		input: EditParams,
 		signal?: AbortSignal,
 		_onUpdate?: AgentToolUpdateCallback<EditToolDetails, TInput>,
 		context?: AgentToolContext,
 	): Promise<AgentToolResult<EditToolDetails, TInput>> {
+		const params = this.#params(input);
 		let editSession = this.#sessions.get(toolCallId);
 		if (!editSession) {
 			// No deltas were streamed (non-streaming provider, inline recovery,
@@ -545,10 +631,14 @@ export class EditTool implements AgentTool<TInput> {
 
 	#inspect(args: unknown): EditInspection {
 		try {
-			return editInspect(this.mode, JSON.stringify(args ?? {}));
+			return editInspect(this.mode, JSON.stringify(this.#params(args) ?? {}));
 		} catch {
 			return { paths: [], entries: [], fileOps: [] };
 		}
+	}
+
+	#params(args: unknown): unknown {
+		return this.mode === "replace" ? harnessParams(this.session, REPLACE_BRIDGES, args) : args;
 	}
 
 	#policy(rawInput: boolean): EditPolicy {

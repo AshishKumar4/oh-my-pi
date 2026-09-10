@@ -8,6 +8,7 @@ import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { ToolExample, TSchema } from "@oh-my-pi/pi-ai";
 import { renderToolInventory } from "@oh-my-pi/pi-ai/dialect";
 import type { DelegationBias } from "@oh-my-pi/pi-catalog/compat/delegation";
+import type { HarnessProfile } from "@oh-my-pi/pi-catalog/compat/harness";
 import {
 	$env,
 	getAgentDir,
@@ -25,6 +26,7 @@ import type { Personality, SkillsSettings } from "./config/settings";
 import { type ContextFile, loadCapability, type SystemPrompt as SystemPromptFile } from "./discovery";
 import { expandAtImports } from "./discovery/at-imports";
 import { loadSkills, type Skill } from "./extensibility/skills";
+import { type HarnessPrompt, loadHarnessPrompt } from "./harness/capture";
 import { hasObsidian } from "./internal-urls/vault-protocol";
 import activeRepoContextTemplate from "./prompts/system/active-repo-context.md" with { type: "text" };
 import computerSafetyPrompt from "./prompts/system/computer-safety.md" with { type: "text" };
@@ -669,6 +671,7 @@ export interface BuildSystemPromptOptions {
 	autoQaEnabled?: boolean;
 	/** Whether active `write` is restricted to xd:// dispatch and the plan artifact sandbox. */
 	writeTransportOnly?: boolean;
+	harnessProfile?: HarnessProfile;
 }
 
 /** Result of building provider-facing system prompt messages. */
@@ -733,6 +736,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		autoQaEnabled = false,
 		writeTransportOnly = false,
 		activeRepoContext: providedActiveRepoContext,
+		harnessProfile,
 	} = options;
 	const inlineToolDescriptors = providedInlineToolDescriptors ?? false;
 	const resolvedCwd = cwd ?? getProjectDir();
@@ -795,6 +799,10 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	const systemPromptCustomizationPromise: Promise<string | null> = callerControlsCustomPrompt
 		? Promise.resolve(null)
 		: logger.time("loadSystemPromptFiles", loadSystemPromptFiles, { cwd: resolvedCwd });
+	const harnessPromptPromise: Promise<HarnessPrompt | null> =
+		harnessProfile === undefined || callerControlsCustomPrompt
+			? Promise.resolve(null)
+			: logger.time("loadHarnessPrompt", loadHarnessPrompt, harnessProfile);
 	const contextFilesPromise = (async () => {
 		const primary = providedContextFiles
 			? providedContextFiles
@@ -863,6 +871,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		cpuModel,
 		gpu,
 		personalityBlock,
+		harnessPrompt,
 	] = await Promise.all([
 		withDeadline(
 			"customPrompt",
@@ -888,6 +897,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		withDeadline("getCpuModel", cpuModelPromise, prepDefaults.cpuModel),
 		withDeadline("getCachedGpu", gpuPromise, prepDefaults.gpu),
 		withDeadline("loadPersonalityOverride", personalityPromise, bundledPersonality),
+		withDeadline("loadHarnessPrompt", harnessPromptPromise, null),
 	]);
 	clearTimeout(deadlineTimer);
 	const agentsMdFiles = Array.from(new Set(workspaceTree.agentsMdFiles)).sort().slice(0, AGENTS_MD_LIMIT);
@@ -971,15 +981,18 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	const hasRead = toolNames.includes("read");
 	const filteredSkills = hasRead ? skills.filter(skill => skill.hide !== true) : [];
 
+	const harnessPromptText = harnessPrompt?.text;
 	const effectiveSystemPromptCustomization = dedupePromptSource(systemPromptCustomization, [
 		resolvedCustomPrompt,
 		resolvedAppendPrompt,
+		harnessPromptText,
 	]);
 	const contextPromptSources = contextFiles.map(file => file.content);
 	const promptSources = [
 		effectiveSystemPromptCustomization,
 		resolvedCustomPrompt,
 		resolvedAppendPrompt,
+		harnessPromptText,
 		...contextPromptSources,
 	];
 	const injectedAlwaysApplyRules = dedupeAlwaysApplyRules(alwaysApplyRules, promptSources);
@@ -1030,15 +1043,19 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		autoQaEnabled,
 		writeTransportOnly,
 	};
-	const rendered = prompt.render(resolvedCustomPrompt ? customSystemPromptTemplate : systemPromptTemplate, data);
-	const systemPrompt = [rendered];
+	const usesCustomTemplate = Boolean(resolvedCustomPrompt) || harnessPromptText !== undefined;
+	const rendered = prompt.render(usesCustomTemplate ? customSystemPromptTemplate : systemPromptTemplate, data);
+	const systemPrompt = harnessPromptText === undefined ? [rendered] : [harnessPromptText];
+	if (harnessPromptText !== undefined && rendered.trim()) {
+		systemPrompt.push(rendered);
+	}
 	if (computerEnabled) {
 		systemPrompt.push(computerSafetyPrompt.trim());
 	}
 	// Custom prompt templates already render context files and append text; the
 	// project footer still carries environment, cwd, workspace, and dir-context.
 	const projectPrompt = prompt
-		.render(projectPromptTemplate, resolvedCustomPrompt ? { ...data, contextFiles: [], appendPrompt: "" } : data)
+		.render(projectPromptTemplate, usesCustomTemplate ? { ...data, contextFiles: [], appendPrompt: "" } : data)
 		.trim();
 	if (projectPrompt) {
 		systemPrompt.push(projectPrompt);
@@ -1048,8 +1065,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	}
 
 	// The xd:// protocol section (with its device catalog) is only rendered by the
-	// default template; a resolved custom prompt uses a template that omits it.
 	const xdevCatalogNames =
-		!resolvedCustomPrompt && xdevTools.length > 0 ? xdevTools.map(mounted => mounted.name) : undefined;
+		!usesCustomTemplate && xdevTools.length > 0 ? xdevTools.map(mounted => mounted.name) : undefined;
 	return { systemPrompt, xdevCatalogNames };
 }

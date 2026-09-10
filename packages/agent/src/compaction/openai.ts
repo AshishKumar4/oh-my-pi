@@ -675,6 +675,7 @@ export function buildOpenAiNativeHistory(
 							call_id: normalized.callId,
 							name: block.customWireName,
 							input: rawInput,
+							...(block.namespace ? { namespace: block.namespace } : {}),
 						});
 						continue;
 					}
@@ -682,8 +683,9 @@ export function buildOpenAiNativeHistory(
 						type: "function_call",
 						id: itemId,
 						call_id: normalized.callId,
-						name: block.name,
+						name: block.wireName ?? block.name,
 						arguments: stringifyJson(block.arguments) ?? "null",
+						...(block.namespace ? { namespace: block.namespace } : {}),
 					});
 				}
 			}

@@ -7,6 +7,7 @@
 import { truncateToWidth } from "@oh-my-pi/pi-tui/utils";
 import { formatDuration, formatNumber, formatPercent } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
+import { harnessLabel, PromptCacheRollup, promptTokenTotal } from "../session/prompt-cache-stats";
 import { openPath } from "../utils/open";
 
 /**
@@ -142,6 +143,25 @@ async function printStatsSummary(): Promise<void> {
 	console.log(`  Avg TTFT: ${overall.avgTtft !== null ? formatDuration(overall.avgTtft) : "-"}`);
 	if (overall.avgTokensPerSecond !== null) {
 		console.log(`  Avg Tokens/s: ${overall.avgTokensPerSecond.toFixed(1)}`);
+	}
+
+	const harness = new PromptCacheRollup();
+	for (const m of byModel) {
+		harness.add(harnessLabel(m.provider, m.model), {
+			requests: m.totalRequests,
+			input: m.totalInputTokens,
+			cacheRead: m.totalCacheReadTokens,
+			cacheWrite: m.totalCacheWriteTokens,
+		});
+	}
+	const harnessRows = harness.entries();
+	if (harnessRows.length > 0) {
+		console.log(chalk.bold("\nBy Harness Profile:"));
+		for (const [label, row] of harnessRows) {
+			console.log(
+				`  ${label}: ${formatPercent(row.hitPct / 100)} cache hit, ${formatNumber(row.requests)} reqs, ${formatNumber(row.cacheRead)} of ${formatNumber(promptTokenTotal(row))} prompt tokens`,
+			);
+		}
 	}
 
 	if (byModel.length > 0) {

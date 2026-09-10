@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `omp auth-gateway serve --record-harness` records your own Claude Code or Codex install's harness surface into the harness prompt cache: point the client at the gateway with a dummy token, take one turn, and a profiled model (`claude-opus-5`, `claude-fable-5`, `claude-fable-5-1` on the Anthropic Messages API; `gpt-6-astra`, `gpt-5.6-sol` on the Codex route) is served that prompt instead of omp's own template. Captures are keyed by the client version and entrypoint the request states, keep the first capture each key produces, store only the `CLAUDE.md`/`AGENTS.md` needles the recorded prompt block carries, hold only the client's base prompt on the Codex side (no memory folder, skill catalog or sandbox policy from the recording machine), are written `0600` with `--no-auth` refusing a non-loopback bind, and are refused with a logged reason and nothing written for a different client surface, an empty prompt or tool surface, or a degraded client path. `/model` and the session-status overlay name the vendor capture a session is being served, and `/session` plus `omp stats --summary` break prompt-cache hit rate down per harness profile (`native`, `claude-code`, `codex`).
+
 ## [18.1.16] - 2026-09-09
 
 ### Added

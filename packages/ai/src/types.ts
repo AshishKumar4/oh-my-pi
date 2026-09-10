@@ -865,6 +865,8 @@ export interface ToolCall {
 	 * JSON function tools.
 	 */
 	customWireName?: string;
+	namespace?: string;
+	wireName?: string;
 	/** Provider-native metadata required to execute and faithfully replay this call. */
 	providerMetadata?: ToolCallProviderMetadata;
 }
@@ -1286,6 +1288,11 @@ export type ToolExample<TArgs = Record<string, unknown>> =
 	| ToolCompareExample<TArgs>
 	| ToolNoteExample;
 
+export interface ToolNamespace {
+	name: string;
+	description?: string;
+}
+
 export interface Tool<TParameters extends TSchema = TSchema> {
 	name: string;
 	description: string;
@@ -1294,6 +1301,7 @@ export interface Tool<TParameters extends TSchema = TSchema> {
 	strict?: boolean;
 	/** Withhold this Anthropic tool until a `tool_addition` message references it. */
 	deferLoading?: boolean;
+	namespace?: ToolNamespace;
 	/**
 	 * Optional grammar constraint for OpenAI custom-tool emission.
 	 * When set, providers that support grammar-constrained tools (currently only

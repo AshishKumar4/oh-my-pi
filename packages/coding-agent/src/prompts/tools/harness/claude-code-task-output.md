@@ -1,0 +1,1 @@
+Get output from a background task or agent by id. With `block: true` this waits up to `timeout` milliseconds for the task to settle and returns its result; with `block: false` it returns the current job snapshot immediately. `timeout: 0` waits until the task settles.

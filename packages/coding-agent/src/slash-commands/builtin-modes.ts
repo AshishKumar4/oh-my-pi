@@ -7,10 +7,12 @@ import {
 	type ResolveCliModelResult,
 } from "../config/model-resolver";
 import type { SettingPath, Settings } from "../config/settings";
+import { servedHarnessPrompt } from "../harness/capture";
 import { describeLoopCondition } from "../modes/loop-condition";
 import { describeLoopLimitRuntime } from "../modes/loop-limit";
 import type { InteractiveModeContext } from "../modes/types";
 import type { AgentSession } from "../session/agent-session";
+import { shortenPath } from "../tools/render-utils";
 import { commandConsumed, errorMessage, usage } from "./helpers/parse";
 import { handleSecurityCommand } from "./helpers/security";
 import type { ParsedSlashCommand, SlashCommandSpec, TuiSlashCommandRuntime } from "./types";
@@ -356,9 +358,14 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			}
 
 			const model = runtime.session.model;
-			await runtime.output(
-				model ? `Current model: ${model.provider}/${model.id}` : "No model is currently selected.",
-			);
+			const harness = servedHarnessPrompt(model);
+			const lines = [model ? `Current model: ${model.provider}/${model.id}` : "No model is currently selected."];
+			if (harness !== undefined) {
+				lines.push(
+					`Harness prompt: ${harness.clientVersion} vendor capture, replacing omp's base prompt (${shortenPath(harness.path)})`,
+				);
+			}
+			await runtime.output(lines.join("\n"));
 			return commandConsumed();
 		},
 		handleTui: (_command, runtime) => {

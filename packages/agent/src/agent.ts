@@ -31,6 +31,7 @@ import {
 	agentLoop,
 	agentLoopContinue,
 	createSyntheticToolResultMessage,
+	injectsIntent,
 	normalizeMessagesForProvider,
 	normalizeTools,
 	resolveOwnedDialectFromEnv,
@@ -794,7 +795,7 @@ export class Agent {
 		const tools = ownedDialect
 			? []
 			: (normalizeTools(this.#toolsForModel(model), {
-					injectIntent: this.#intentTracing,
+					injectIntent: injectsIntent(this.#intentTracing, model),
 					pruneDescriptions: this.#pruneToolDescriptions,
 				}) ?? []);
 		let context: Context = { systemPrompt, messages, tools };

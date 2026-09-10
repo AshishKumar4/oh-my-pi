@@ -24,6 +24,7 @@ import {
 import { getEditStore } from "../edit/store";
 import { normalizeToLF } from "../edit/normalize";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { type HarnessBridges, harnessParameters, harnessParams } from "../harness/bridge";
 import { InternalUrlRouter } from "../internal-urls";
 import { parseInternalUrl } from "../internal-urls/parse";
 import { couldBecomeXdUrl, parseXdUrl } from "../internal-urls/xd-protocol";
@@ -311,6 +312,20 @@ const writeSchema = type({
 
 export type WriteToolInput = typeof writeSchema.infer;
 
+const claudeCodeWriteSchema = type({
+	file_path: type("string").describe("absolute file path"),
+	content: type("string").describe("file content"),
+});
+
+type WriteInputSchema = typeof writeSchema | typeof claudeCodeWriteSchema;
+
+const WRITE_BRIDGES: HarnessBridges<WriteToolInput, typeof claudeCodeWriteSchema> = {
+	"claude-code": {
+		parameters: claudeCodeWriteSchema,
+		toParams: args => ({ path: args.file_path, content: args.content }),
+	},
+};
+
 /** Details returned by the write tool for TUI rendering */
 export interface WriteToolDetails {
 	diagnostics?: FileDiagnosticsResult;
@@ -513,10 +528,10 @@ function parseSqliteWriteTarget(subPath: string, queryString: string): { table: 
  *
  * Creates or overwrites files with optional LSP formatting and diagnostics.
  */
-export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails> {
+export class WriteTool implements AgentTool<WriteInputSchema, WriteToolDetails> {
 	readonly name = "write";
 	readonly approval = (args: unknown): ToolApprovalDecision => {
-		const rawPath = (args as Partial<WriteParams>).path;
+		const rawPath = harnessParams(this.session, WRITE_BRIDGES, args).path;
 		if (typeof rawPath !== "string") return "write";
 		// Unwrap a hashline `[path#TAG]` wrapper first (parity with execute) so a
 		// wrapped `[ssh://h/x#ABCD]` can't dodge scheme detection and the tier checks below.
@@ -537,7 +552,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			// Malformed JSON, non-object payloads, missing content, and approval
 			// functions that reject schema-invalid objects stay exec so the gate
 			// fails closed — the dispatch itself rejects invalid arguments too.
-			const rawContent = (args as Partial<WriteParams>).content;
+			const rawContent = harnessParams(this.session, WRITE_BRIDGES, args).content;
 			if (typeof rawContent !== "string") return "exec";
 			let parsed: unknown;
 			try {
@@ -563,7 +578,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		return resolveFileWriteApprovalTier(path);
 	};
 	readonly formatApprovalDetails = (args: unknown): string[] => {
-		const params = args as Partial<WriteParams>;
+		const params = harnessParams(this.session, WRITE_BRIDGES, args);
 		const targetPath = typeof params.path === "string" ? params.path : "(missing)";
 		const content = typeof params.content === "string" ? params.content : "";
 		return [`Path: ${truncateForPrompt(targetPath)}`, `Content:\n${truncateForPrompt(content)}`];
@@ -573,14 +588,16 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		const deviceOnly = this.session.deviceOnlyWrite === true && this.session.pendingFullWriteDescription !== true;
 		return prompt.render(deviceOnly ? writeDeviceOnlyDescription : writeDescription);
 	}
-	readonly parameters = writeSchema;
+	get parameters(): WriteInputSchema {
+		return harnessParameters(this.session, WRITE_BRIDGES, writeSchema);
+	}
 	readonly strict = true;
 	readonly concurrency = "exclusive";
 	readonly loadMode = "essential";
 
 	/** Stream matchers should see the real file content, not its JSON-escaped argument encoding. */
 	matcherDigest(args: unknown): string | undefined {
-		const content = (args as Partial<WriteParams>).content;
+		const content = harnessParams(this.session, WRITE_BRIDGES, args).content;
 		return typeof content === "string" ? content : undefined;
 	}
 
@@ -1106,11 +1123,12 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 
 	async execute(
 		_toolCallId: string,
-		{ path: rawPath, content }: WriteParams,
+		input: WriteParams | typeof claudeCodeWriteSchema.infer,
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<WriteToolDetails>,
 		context?: AgentToolContext,
 	): Promise<AgentToolResult<WriteToolDetails>> {
+		const { path: rawPath, content } = harnessParams(this.session, WRITE_BRIDGES, input);
 		// Strip a hashline `[path#TAG]` wrapper up front so every downstream
 		// decision (scheme routing, internal-URL handler dispatch, plan-mode
 		// guard, plan path resolution, ACP bridge routing) sees the same

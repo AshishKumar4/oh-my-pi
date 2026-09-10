@@ -46,6 +46,7 @@ import {
 	recoverHarmonyToolCall,
 	signalListLabel,
 } from "@oh-my-pi/pi-ai/utils/harmony-leak";
+import { resolveHarnessProfile } from "@oh-my-pi/pi-catalog/compat/harness";
 import { logger, sanitizeText, structuredCloneJSON } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { agentPauseGate } from "./pause";
@@ -888,6 +889,10 @@ export interface NormalizeToolsOptions {
 	pruneDescriptions?: boolean;
 }
 
+export function injectsIntent(intentTracing: boolean | undefined, model: Model): boolean {
+	return !!intentTracing && resolveHarnessProfile(model) === undefined;
+}
+
 export function normalizeTools(tools: AgentContext["tools"], options: NormalizeToolsOptions): Context["tools"] {
 	const pruneDescriptions = options.pruneDescriptions === true;
 	const injectIntent = options.injectIntent && Bun.env.PI_NO_INTENT !== "1";
@@ -1605,11 +1610,12 @@ async function prepareProviderCall(
 	const normalizedMessages = normalizeMessagesForProvider(llmMessages, model);
 	const ownedDialect: Dialect | undefined = config.dialect ?? resolveOwnedDialectFromEnv(Bun.env.PI_DIALECT);
 	const pruneToolDescriptions = !!config.pruneToolDescriptions && !ownedDialect;
+	const intentTracing = injectsIntent(config.intentTracing, model);
 	let llmContext: Context;
 	if (config.appendOnlyContext) {
 		config.appendOnlyContext.syncMessages(normalizedMessages);
 		llmContext = config.appendOnlyContext.build(context, {
-			intentTracing: !!config.intentTracing,
+			intentTracing,
 			pruneToolDescriptions,
 		});
 	} else {
@@ -1617,7 +1623,7 @@ async function prepareProviderCall(
 			systemPrompt: context.systemPrompt,
 			messages: normalizedMessages,
 			tools: normalizeTools(context.tools, {
-				injectIntent: !!config.intentTracing,
+				injectIntent: intentTracing,
 				pruneDescriptions: pruneToolDescriptions,
 			}),
 		};
@@ -2260,12 +2266,13 @@ function resolveToolForCall(
 	// come back under their wire-level name, which may differ from the
 	// harness-internal `name`. Match on either, preferring `name` for
 	// determinism if both somehow collide.
+	const dispatchName = toolCall.wireName ?? toolCall.name;
 	return (
-		tools?.find(t => t.name === toolCall.name) ??
-		tools?.find(t => t.customWireName !== undefined && t.customWireName === toolCall.name) ??
+		tools?.find(t => t.name === dispatchName) ??
+		tools?.find(t => t.customWireName !== undefined && t.customWireName === dispatchName) ??
 		// Not in the advertised set: let the host route side-transport tools
 		// (e.g. xd:// device mounts) called by their top-level name.
-		resolveFallbackTool?.(toolCall.name)
+		resolveFallbackTool?.(dispatchName)
 	);
 }
 
@@ -2291,6 +2298,10 @@ async function prepareToolCallDispatch(
 		if (toolCall.type !== "toolCall") continue;
 		if ((toolCall as CursorExecResolvedCarrier)[kCursorExecResolved] === true) continue;
 		const tool = resolveToolForCall(context.tools, toolCall, resolveFallbackTool);
+		if (tool?.persistAs !== undefined && toolCall.name !== tool.persistAs) {
+			toolCall.wireName = toolCall.name;
+			toolCall.name = tool.persistAs;
+		}
 		const entry: PreparedToolCall = { tool, args: toolCall.arguments as Record<string, unknown> };
 		prepared.set(toolCall.id, entry);
 		let argsForExecution = toolCall.arguments as Record<string, unknown>;

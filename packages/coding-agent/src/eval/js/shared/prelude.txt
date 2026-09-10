@@ -481,6 +481,10 @@ if (!globalThis.__omp_js_prelude_loaded__) {
 	globalThis.print = consoleBridge.log;
 	globalThis.display = display;
 	globalThis.tool = tool;
+	// Codex spells the same bridge `tools`, and the vendor `exec` description
+	// omp serves to a codex-profile model says so on its second line. Same
+	// proxy under both names, so neither surface can go stale.
+	globalThis.tools = tool;
 	globalThis.completion = completion;
 	globalThis.output = output;
 	globalThis.agent = agent;

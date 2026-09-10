@@ -1,0 +1,92 @@
+{
+	"harness": "claude-code",
+	"clientVersion": "2.1.267",
+	"models": ["claude-opus-5", "claude-fable-5-1"],
+	"source": {
+		"client": "Claude Code 2.1.267 (proprietary). Captured billing header: `cc_version=2.1.267.d7f; cc_entrypoint=sdk-cli`.",
+		"recorded": "POST /v1/messages request body, one interactive turn, 25 flat tool declarations",
+		"vendored": "STRUCTURE ONLY. Claude Code's system-prompt text (27k chars in the capture) and its tool descriptions are proprietary and are never committed. This fixture holds block kinds, ordering, cache-breakpoint placement, envelope field shapes, declaration/schema forms and naming conventions. Verbatim-text comparisons live in the local-only block of harness-golden-contract.test.ts and skip without OMP_HARNESS_CAPTURE_DIR / OMP_HARNESS_CACHE_DIR.",
+		"entrypointNote": "The capture is the `sdk-cli` entrypoint, whose identity sentence is `You are a Claude agent, built on Anthropic's Claude Agent SDK.` and which carries a single prompt block. omp impersonates `cc_entrypoint=cli`, whose identity sentence is `claudeCodeSystemInstruction` and which precedes its main prompt with a `# Reporting outcomes` block. `systemLayout` collapses consecutive same-kind blocks, so both entrypoints project to the same three kinds and this golden covers either capture.",
+		"provenance": {
+			"systemLayout": "capture",
+			"cachedSystemSlots": "capture — breakpoints on the identity block and on the last system block, both `ephemeral` with a 1h TTL",
+			"inventoryCarrier": "capture — flat top-level `tools`",
+			"prefixedToolNames": "capture — declarations use the harness's own names, no transport prefix",
+			"envelope": "capture — max_tokens 64000, adaptive thinking with a display field, context_management.edits, output_config.effort, no tool_choice",
+			"declarationForms": "capture — exactly `{description, input_schema, name}`",
+			"schemaForms": "capture — JSON Schema objects carrying `$schema` (draft 2020-12), `additionalProperties` and `properties`",
+			"boundNaming": "capture — every declared name is PascalCase"
+		}
+	},
+	"vendorFraming": {
+		"family": "anthropic-messages",
+		"systemLayout": ["billing-header", "identity", "prompt"],
+		"cachedSystemSlots": ["identity:ephemeral/1h", "prompt-last:ephemeral/1h"],
+		"inventoryCarrier": "tools",
+		"namespaceStructure": null,
+		"envelope": {
+			"max_tokens": "64000",
+			"thinking": "object{display,type}",
+			"context_management": "object{edits}",
+			"output_config": "object{effort}",
+			"stream": "true",
+			"tool_choice": "absent"
+		},
+		"presentForbiddenKeys": [],
+		"prefixedToolNames": []
+	},
+	"vendorInventory": {
+		"declarationForms": ["untyped|description,input_schema,name"],
+		"boundNaming": ["PascalCase"],
+		"unboundNaming": [],
+		"schemaForms": [
+			"object|$schema,additionalProperties,properties",
+			"object|$schema,additionalProperties,properties,required"
+		],
+		"argumentDocStyle": "inline-property-descriptions"
+	},
+	"ompFraming": {
+		"family": "anthropic-messages",
+		"systemLayout": ["billing-header", "identity", "prompt"],
+		"cachedSystemSlots": ["identity:ephemeral"],
+		"inventoryCarrier": "tools",
+		"namespaceStructure": null,
+		"envelope": {
+			"max_tokens": "64000",
+			"thinking": "object{display,type}",
+			"context_management": "object{edits}",
+			"output_config": "object{effort}",
+			"stream": "true",
+			"tool_choice": "absent"
+		},
+		"presentForbiddenKeys": [],
+		"prefixedToolNames": []
+	},
+	"ompFramingPerModel": {
+		"claude-fable-5-1": {
+			"why": "Fable 5 resolves a prefix-mismatch behaviour in catalog compat, so its thinking block carries `block_binding`. Model-lineage policy, not a harness-profile difference — the other profiled model (Opus 5) must not grow the field.",
+			"deltas": { "envelope.thinking": "object{block_binding,display,type}" }
+		}
+	},
+	"ompInventory": {
+		"declarationForms": [
+			"untyped|description,eager_input_streaming,input_schema,name",
+			"untyped|description,eager_input_streaming,input_schema,name,strict"
+		],
+		"boundNaming": ["PascalCase"],
+		"unboundNaming": ["lowercase", "mcp-qualified"],
+		"schemaForms": ["object|additionalProperties,properties,required"],
+		"argumentDocStyle": "inline-property-descriptions"
+	},
+	"documentedFramingDeltas": {
+		"cachedSystemSlots": "The captured client sets two breakpoints — the identity block and the last system block — each `ephemeral` with `ttl: \"1h\"`. omp anchors only the identity block, at the default 5-minute TTL: `applyHeadCaching` (packages/ai/src/providers/anthropic.ts:3588) returns early because the OAuth identity block already carries a breakpoint, so the (equally stable) main prompt is left to whatever breakpoint the moving message tail contributes. Cost/latency divergence and a different cache prefix than the harness the model was trained under; reported, not fixed here."
+	},
+	"documentedInventoryDeltas": {
+		"declarationForms": "omp adds Anthropic's `eager_input_streaming` beta flag to every declaration (from catalog compat, not the profile) and `strict: true` to schema-strict tools; the captured client sends exactly `{description, input_schema, name}`. Behaviour-neutral for the backend, but a fingerprint difference on every request.",
+		"schemaForms": "the captured client emits `\"$schema\": \"https://json-schema.org/draft/2020-12/schema\"` on every `input_schema`; omp emits none. Same schema semantics, different bytes.",
+		"unboundNaming": "by design: omp keeps `grep`, `glob`, `todo`, `learn`, `recall` and MCP tools that the harness has no counterpart for, so their names legitimately stay in omp's convention (`lowercase`, `mcp-qualified`). The vendor projection passes every captured name as bound, so its unbound set is empty. Membership is the free half of the two-tier contract; `boundNaming` — the half that must match — carries no delta."
+	},
+	"notes": {
+		"fingerprintVersion": "omp's own wire fingerprint (`claudeCodeVersion` in packages/ai/src/providers/claude-code-fingerprint.ts) is 2.1.257, while the harness release these manifests and this golden were captured from is 2.1.267. The billing header and User-Agent therefore advertise an older CLI than the tool surface omp impersonates. Reported, not fixed here: bumping the fingerprint is a provider-owned change."
+	}
+}

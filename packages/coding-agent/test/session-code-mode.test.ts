@@ -13,6 +13,7 @@ import { EVAL_AGENT_BRIDGE_NAME } from "../src/eval/agent-bridge";
 import { EVAL_BUDGET_BRIDGE_NAME } from "../src/eval/budget-bridge";
 import { EVAL_COMPLETION_BRIDGE_NAME } from "../src/eval/completion-bridge";
 import { EVAL_CANCEL_BRIDGE_NAME, EVAL_STATUS_BRIDGE_NAME, EVAL_WAIT_BRIDGE_NAME } from "../src/eval/handle-bridge";
+import { harnessToolBinding } from "../src/harness/manifest";
 import { createAgentSession } from "../src/sdk";
 import { AgentSession } from "../src/session/agent-session";
 import type { ToolNamespacesInfo } from "../src/session/code-mode";
@@ -160,6 +161,31 @@ describe("resolveCodeMode", () => {
 			evalTransportAvailable: true,
 		});
 		expect([...r.directToolNames]).toEqual(["eval", ...reserved]);
+	});
+	test("the codex profile keeps exactly the tools its manifest groups under a namespace", () => {
+		const enabled = ["eval", "read", "bash", "task", "hub", "web_search"];
+		const grouped = enabled.filter(name => harnessToolBinding("codex", name)?.namespace !== undefined);
+		const r = resolveCodeMode({
+			provider: "openai-codex",
+			toolMode: "code_mode_only",
+			setting: "auto",
+			enabledToolNames: enabled,
+			evalTransportAvailable: true,
+			harnessProfile: "codex",
+		});
+		expect(grouped.length).toBeGreaterThan(0);
+		expect([...r.directToolNames]).toEqual(["eval", ...grouped]);
+	});
+	test("a profile that groups nothing leaves delegation bridged", () => {
+		const r = resolveCodeMode({
+			provider: "openai-codex",
+			toolMode: "code_mode_only",
+			setting: "auto",
+			enabledToolNames: ["eval", "task", "hub"],
+			evalTransportAvailable: true,
+			harnessProfile: "claude-code",
+		});
+		expect([...r.directToolNames]).toEqual(["eval"]);
 	});
 });
 
@@ -614,10 +640,10 @@ describe("Code Mode session startup", () => {
 		expect(session.getEnabledToolNames()).toContain("read");
 		expect(session.getToolForEvalBridge("read")?.name).toBe("read");
 		// The namespaces snapshot feeding `tool_namespaces_info` exists before
-		// any turn runs.
 		const info = session.codeModeNamespacesInfo as ToolNamespacesInfo;
-		expect(info.functions.functions.eval.direct).toBe(true);
-		expect(info.functions.functions.read.direct).toBe(false);
+		const entries = Object.values(info.functions.functions);
+		expect(entries.find(entry => entry.code_mode_name === "eval")?.direct).toBe(true);
+		expect(entries.find(entry => entry.code_mode_name === "read")?.direct).toBe(false);
 	});
 
 	test("fresh session with code mode off keeps the direct surface and no namespaces info", async () => {

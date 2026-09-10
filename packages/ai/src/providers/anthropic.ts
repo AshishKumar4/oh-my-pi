@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import { scheduler } from "node:timers/promises";
 import * as tls from "node:tls";
 import { isAnthropicSigningProxyUrl, isOfficialAnthropicApiUrl } from "@oh-my-pi/pi-catalog/compat/anthropic";
+import { resolveHarnessProfile } from "@oh-my-pi/pi-catalog/compat/harness";
 import { hostMatchesUrl, isVertexRawPredictUrl } from "@oh-my-pi/pi-catalog/hosts";
 import { mapEffortToAnthropicAdaptiveEffort } from "@oh-my-pi/pi-catalog/model-thinking";
 import { calculateCost, getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -98,6 +99,8 @@ import {
 } from "./anthropic-wire";
 import {
 	CLAUDE_CODE_MAX_OUTPUT_TOKENS,
+	claudeCodeBillingHeaderPrefix,
+	claudeCodeEntrypoint,
 	claudeCodeSdkVersion,
 	claudeCodeSystemInstruction,
 	claudeCodeVersion,
@@ -650,8 +653,6 @@ const overridableAnthropicHeaderKeys = new Set(
 	[...Object.keys(claudeCodeHeaders), "anthropic-beta", "User-Agent", "x-app"].map(key => key.toLowerCase()),
 );
 
-const CLAUDE_BILLING_HEADER_PREFIX = "x-anthropic-billing-header:";
-
 function createClaudeBillingHeader(firstUserMessageText: string): string {
 	// Fingerprint: SHA256(salt + msg[4] + msg[7] + msg[20] + version)[:3]
 	// Matches CC's computeFingerprint in utils/fingerprint.ts.
@@ -664,7 +665,7 @@ function createClaudeBillingHeader(firstUserMessageText: string): string {
 		.slice(0, 3);
 	// cch=00000: placeholder replaced with the real attestation hash by wrapFetchForCch
 	// before the request hits the wire (see below).
-	return `${CLAUDE_BILLING_HEADER_PREFIX} cc_version=${claudeCodeVersion}.${versionSuffix}; cc_entrypoint=cli; ${CCH_PLACEHOLDER_STR};`;
+	return `${claudeCodeBillingHeaderPrefix} cc_version=${claudeCodeVersion}.${versionSuffix}; cc_entrypoint=${claudeCodeEntrypoint}; ${CCH_PLACEHOLDER_STR};`;
 }
 
 // cch attestation: XXHash64(body_with_placeholder, seed) low-20-bits, 5 hex chars.
@@ -679,7 +680,7 @@ const CCH_PLACEHOLDER = cchEncoder.encode(CCH_PLACEHOLDER_STR);
 // "system" in Anthropic SDK payloads (~byte 29 vs ~byte 4705), so user content
 // in the messages array can never match this sequence.  User system prompt text
 // lives in system[2] and therefore also cannot match.
-const BILLING_SYSTEM_MARKER = cchEncoder.encode(`"system":[{"type":"text","text":"${CLAUDE_BILLING_HEADER_PREFIX}`);
+const BILLING_SYSTEM_MARKER = cchEncoder.encode(`"system":[{"type":"text","text":"${claudeCodeBillingHeaderPrefix}`);
 const CCH_BILLING_SEARCH_WINDOW = 150;
 
 function patchCch(body: Uint8Array): "patched" | "no-billing-header" | "unanchored" {
@@ -898,18 +899,48 @@ function shouldUseUmansGatewayWebSearch(name: string, enabled: boolean): boolean
 	return enabled && name.toLowerCase() === UMANS_WEBSEARCH_TOOL_NAME;
 }
 
+type AnthropicHarnessToolNames = {
+	toWire: ReadonlyMap<string, string>;
+	fromWire: ReadonlyMap<string, string>;
+};
+
+function buildAnthropicHarnessToolNames(
+	model: Model<"anthropic-messages">,
+	tools: Tool[] | undefined,
+): AnthropicHarnessToolNames | undefined {
+	if (resolveHarnessProfile(model) !== "claude-code") return undefined;
+	const toWire = new Map<string, string>();
+	const fromWire = new Map<string, string>();
+	for (const tool of tools ?? []) {
+		const wireName = tool.customWireName;
+		if (wireName === undefined || wireName === tool.name) continue;
+		toWire.set(tool.name, wireName);
+		fromWire.set(wireName, tool.name);
+	}
+	if (toWire.size === 0) return undefined;
+	return { toWire, fromWire };
+}
+
 function encodeAnthropicToolName(
 	name: string,
 	isOAuthToken: boolean,
 	escapeBuiltinToolNames: boolean,
 	useUmansGatewayWebSearch = false,
+	harnessToolNames?: AnthropicHarnessToolNames,
 ): string {
 	if (shouldUseUmansGatewayWebSearch(name, useUmansGatewayWebSearch)) return name;
+	if (harnessToolNames) return harnessToolNames.toWire.get(name) ?? name;
 	if (escapeBuiltinToolNames) return `${claudeToolPrefix}${name}`;
 	return isOAuthToken ? applyClaudeToolPrefix(name) : name;
 }
 
-function decodeAnthropicToolName(name: string, isOAuthToken: boolean, escapeBuiltinToolNames: boolean): string {
+function decodeAnthropicToolName(
+	name: string,
+	isOAuthToken: boolean,
+	escapeBuiltinToolNames: boolean,
+	harnessToolNames?: AnthropicHarnessToolNames,
+): string {
+	if (harnessToolNames) return harnessToolNames.fromWire.get(name) ?? name;
 	if (isOAuthToken || escapeBuiltinToolNames) return stripClaudeToolPrefix(name);
 	return name;
 }
@@ -2185,6 +2216,7 @@ const streamAnthropicOnce = (
 				isOAuthToken = created.isOAuthToken;
 			}
 			const preparedContext = await prepareAnthropicManyImageContext(context, model.input.includes("image"));
+			const harnessToolNames = buildAnthropicHarnessToolNames(model, preparedContext.tools);
 			const prepareParams = async (): Promise<MessageCreateParamsStreaming> => {
 				let nextParams = buildParams(model, preparedContext, isOAuthToken, options, {
 					disableStrictTools,
@@ -2195,6 +2227,7 @@ const streamAnthropicOnce = (
 					dropAllThinking,
 					droppedThinkingBlocks: providerSessionState?.prefixDroppedThinkingBlocks,
 					providerSessionState,
+					harnessToolNames,
 					fallbacks,
 				});
 				if (disableStrictTools) {
@@ -2677,6 +2710,7 @@ const streamAnthropicOnce = (
 										event.content_block.name,
 										isOAuthToken,
 										model.compat.escapeBuiltinToolNames,
+										harnessToolNames,
 									),
 									arguments: event.content_block.input ?? {},
 									[kStreamingPartialJson]: "",
@@ -3153,7 +3187,7 @@ export function buildAnthropicSystemBlocks(
 	const { includeClaudeCodeInstruction = false, extraInstructions = [], firstUserMessageText, cacheControl } = options;
 	const sanitizedPrompts = normalizeSystemPrompts(systemPrompt);
 	const trimmedInstructions = extraInstructions.map(instruction => instruction.trim()).filter(Boolean);
-	const hasBillingHeader = sanitizedPrompts.some(prompt => prompt.startsWith(CLAUDE_BILLING_HEADER_PREFIX));
+	const hasBillingHeader = sanitizedPrompts.some(prompt => prompt.startsWith(claudeCodeBillingHeaderPrefix));
 
 	if (includeClaudeCodeInstruction && !hasBillingHeader) {
 		const blocks: AnthropicSystemBlock[] = [
@@ -3879,6 +3913,7 @@ type AnthropicParamBuildOptions = {
 	dropAllThinking: boolean;
 	droppedThinkingBlocks?: ReadonlySet<string>;
 	providerSessionState?: AnthropicProviderSessionState;
+	harnessToolNames?: AnthropicHarnessToolNames;
 	/** Sanitized server-side fallback entries; defaults to `options?.fallbacks` when omitted. */
 	fallbacks?: AnthropicOptions["fallbacks"];
 };
@@ -3899,6 +3934,7 @@ function buildParams(
 		dropAllThinking,
 		droppedThinkingBlocks,
 		providerSessionState,
+		harnessToolNames,
 		fallbacks = options?.fallbacks,
 	} = buildOptions;
 	// A session-scoped auto-demote (learned from a live signing 400) clones the
@@ -3932,6 +3968,7 @@ function buildParams(
 			supportsEagerToolInputStreaming,
 			model.compat.escapeBuiltinToolNames,
 			useUmansGatewayWebSearch,
+			harnessToolNames,
 		);
 	} else if (isOAuthToken) {
 		tools = [];
@@ -4031,6 +4068,7 @@ function buildParams(
 		serverSideFallbackEnabled: !!fallbacks?.length,
 		dropAllThinking,
 		droppedThinkingBlocks,
+		harnessToolNames,
 	});
 	const controlState = getAnthropicControlState(providerSessionState, options?.sessionId, systemBlocks, wireMessages);
 	if (controlState) syncAnthropicControlState(controlState, wireMessages);
@@ -4120,6 +4158,7 @@ function buildParams(
 					isOAuthToken,
 					model.compat.escapeBuiltinToolNames,
 					useUmansGatewayWebSearch,
+					harnessToolNames,
 				),
 			};
 		}
@@ -4250,8 +4289,10 @@ export function convertAnthropicMessages(
 		serverSideFallbackEnabled?: boolean;
 		dropAllThinking?: boolean;
 		droppedThinkingBlocks?: ReadonlySet<string>;
+		harnessToolNames?: AnthropicHarnessToolNames;
 	},
 ): AnthropicMessageParam[] {
+	const harnessToolNames = opts?.harnessToolNames;
 	// Indices of params emitted from `developer` messages. After the main pass,
 	// the ones whose placement satisfies Anthropic's mid-conversation rules are
 	// upgraded from the `user` role to the authoritative `system` role.
@@ -4303,7 +4344,13 @@ export function convertAnthropicMessages(
 						type: change.type,
 						tool: {
 							type: "tool_reference",
-							name: encodeAnthropicToolName(change.name, isOAuthToken, model.compat.escapeBuiltinToolNames),
+							name: encodeAnthropicToolName(
+								change.name,
+								isOAuthToken,
+								model.compat.escapeBuiltinToolNames,
+								false,
+								harnessToolNames,
+							),
 						},
 					});
 				}
@@ -4395,7 +4442,15 @@ export function convertAnthropicMessages(
 					blocks.push({
 						type: "tool_use",
 						id: block.id,
-						name: encodeAnthropicToolName(block.name, isOAuthToken, model.compat.escapeBuiltinToolNames),
+						name:
+							block.wireName ??
+							encodeAnthropicToolName(
+								block.name,
+								isOAuthToken,
+								model.compat.escapeBuiltinToolNames,
+								false,
+								harnessToolNames,
+							),
 						// Always sanitize: the model itself can emit lone-surrogate escapes
 						// in tool-argument JSON (streamed out fine, rejected with a 400 on
 						// replay by Anthropic's strict UTF-8 validation). toWellFormedDeep
@@ -5050,6 +5105,7 @@ function convertTools(
 	supportsEagerToolInputStreaming = true,
 	escapeBuiltinToolNames = false,
 	useUmansGatewayWebSearch = false,
+	harnessToolNames?: AnthropicHarnessToolNames,
 ): AnthropicWireTool[] {
 	if (!tools) return [];
 	const schemaPlans = buildAnthropicToolSchemaPlans(tools, disableStrictTools);
@@ -5057,7 +5113,13 @@ function convertTools(
 	return tools.map((tool, index) => {
 		const plan = schemaPlans[index];
 		const baseTool = {
-			name: encodeAnthropicToolName(tool.name, isOAuthToken, escapeBuiltinToolNames, useUmansGatewayWebSearch),
+			name: encodeAnthropicToolName(
+				tool.name,
+				isOAuthToken,
+				escapeBuiltinToolNames,
+				useUmansGatewayWebSearch,
+				harnessToolNames,
+			),
 			description: tool.description || "",
 			input_schema: plan.inputSchema,
 		};

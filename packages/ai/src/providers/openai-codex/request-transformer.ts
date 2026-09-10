@@ -314,6 +314,45 @@ export interface CodexLiteShapedBody {
 	parallel_tool_calls?: unknown;
 }
 
+function matchesForcedToolChoice(tool: unknown, choice: Record<string, unknown>): boolean {
+	if (tool === null || typeof tool !== "object" || !("type" in tool)) return false;
+	if (choice.type === "computer") return tool.type === "computer";
+	return (
+		choice.type === "function" &&
+		tool.type === "function" &&
+		typeof choice.name === "string" &&
+		"name" in tool &&
+		tool.name === choice.name
+	);
+}
+
+function selectForcedTool(declaredTools: readonly unknown[], choice: Record<string, unknown>): unknown {
+	for (const tool of declaredTools) {
+		if (tool !== null && typeof tool === "object" && "type" in tool && tool.type === "namespace") {
+			const members = "tools" in tool && Array.isArray(tool.tools) ? tool.tools : [];
+			const member = members.find(entry => matchesForcedToolChoice(entry, choice));
+			if (member !== undefined) return { ...tool, tools: [member] };
+			continue;
+		}
+		if (matchesForcedToolChoice(tool, choice)) return tool;
+	}
+	return undefined;
+}
+
+export function takeCodexToolSurface(body: CodexLiteShapedBody): InputItem {
+	const declaredTools = Array.isArray(body.tools) ? body.tools : [];
+	let additionalTools = declaredTools;
+	if (body.tool_choice && typeof body.tool_choice === "object" && "type" in body.tool_choice) {
+		const selected = selectForcedTool(declaredTools, body.tool_choice);
+		if (selected !== undefined) {
+			additionalTools = [selected];
+			body.tool_choice = "required";
+		}
+	}
+	delete body.tools;
+	return { type: "additional_tools", role: "developer", tools: additionalTools };
+}
+
 /**
  * Applies the Responses Lite body contract in place (codex-rs
  * `build_responses_request` with `use_responses_lite`): strips pinned image
@@ -333,28 +372,7 @@ export function applyCodexResponsesLiteShape(body: CodexLiteShapedBody): void {
 	const input = Array.isArray(body.input) ? body.input : [];
 	stripImageDetails(input);
 	body.parallel_tool_calls = false;
-	const declaredTools = Array.isArray(body.tools) ? body.tools : [];
-	let additionalTools = declaredTools;
-	if (body.tool_choice && typeof body.tool_choice === "object" && "type" in body.tool_choice) {
-		const choice = body.tool_choice;
-		const selected = declaredTools.find(tool => {
-			if (tool === null || typeof tool !== "object" || !("type" in tool)) return false;
-			if (choice.type === "computer") return tool.type === "computer";
-			return (
-				choice.type === "function" &&
-				tool.type === "function" &&
-				"name" in choice &&
-				typeof choice.name === "string" &&
-				"name" in tool &&
-				tool.name === choice.name
-			);
-		});
-		if (selected) {
-			additionalTools = [selected];
-			body.tool_choice = "required";
-		}
-	}
-	const prefix: InputItem[] = [{ type: "additional_tools", role: "developer", tools: additionalTools }];
+	const prefix: InputItem[] = [takeCodexToolSurface(body)];
 	if (typeof body.instructions === "string" && body.instructions.length > 0) {
 		prefix.push({
 			type: "message",
@@ -367,7 +385,6 @@ export function applyCodexResponsesLiteShape(body: CodexLiteShapedBody): void {
 		body.tool_choice = "auto";
 	}
 	delete body.instructions;
-	delete body.tools;
 }
 
 export async function transformRequestBody(

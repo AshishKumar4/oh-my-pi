@@ -12,6 +12,7 @@ import { prompt } from "@oh-my-pi/pi-utils";
 import { ModelRegistry } from "../../config/model-registry";
 import { settings } from "../../config/settings";
 import type { CustomTool, CustomToolContext, RenderResultOptions } from "../../extensibility/custom-tools/types";
+import { type HarnessBridges, harnessParameters, harnessParams } from "../../harness/bridge";
 import type { Theme } from "../../modes/theme/theme";
 import webSearchSystemPrompt from "../../prompts/system/web-search.md" with { type: "text" };
 import webSearchDescription from "../../prompts/tools/web-search.md" with { type: "text" };
@@ -49,6 +50,30 @@ export const webSearchSchema = type({
 });
 
 export type SearchToolParams = typeof webSearchSchema.infer;
+
+const claudeCodeWebSearchSchema = type({
+	query: type("string >= 2").describe("search query"),
+	"allowed_domains?": type("string[]").describe("only include results from these domains"),
+	"blocked_domains?": type("string[]").describe("never include results from these domains"),
+});
+type WebSearchInputSchema = typeof webSearchSchema | typeof claudeCodeWebSearchSchema;
+
+export function withDomainOperators(query: string, allowed?: readonly string[], blocked?: readonly string[]): string {
+	const parts = [query.trim()];
+	if (allowed && allowed.length > 0) {
+		const sites = allowed.map(domain => `site:${domain}`);
+		parts.push(sites.length === 1 ? sites[0]! : `(${sites.join(" OR ")})`);
+	}
+	for (const domain of blocked ?? []) parts.push(`-site:${domain}`);
+	return parts.join(" ");
+}
+
+const WEB_SEARCH_BRIDGES: HarnessBridges<SearchToolParams, typeof claudeCodeWebSearchSchema> = {
+	"claude-code": {
+		parameters: claudeCodeWebSearchSchema,
+		toParams: args => ({ query: withDomainOperators(args.query, args.allowed_domains, args.blocked_domains) }),
+	},
+};
 
 export interface SearchQueryParams extends SearchToolParams {
 	provider?: SearchProviderId | "auto";
@@ -315,12 +340,14 @@ export async function runSearchQuery(
  *
  * Supports the configured web-search provider chain with automatic fallback.
  */
-export class WebSearchTool implements AgentTool<typeof webSearchSchema, SearchRenderDetails> {
+export class WebSearchTool implements AgentTool<WebSearchInputSchema, SearchRenderDetails> {
 	readonly name = "web_search";
 	readonly approval = "read" as const;
 	readonly label = "Web Search";
 	readonly description: string;
-	readonly parameters = webSearchSchema;
+	get parameters(): WebSearchInputSchema {
+		return harnessParameters(this.#session, WEB_SEARCH_BRIDGES, webSearchSchema);
+	}
 	readonly strict = true;
 	readonly loadMode = "discoverable";
 	readonly summary = "Search the web for up-to-date information";
@@ -334,11 +361,12 @@ export class WebSearchTool implements AgentTool<typeof webSearchSchema, SearchRe
 
 	async execute(
 		_toolCallId: string,
-		params: SearchToolParams,
+		input: SearchToolParams | typeof claudeCodeWebSearchSchema.infer,
 		signal?: AbortSignal,
 		_onUpdate?: AgentToolUpdateCallback<SearchRenderDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<SearchRenderDetails>> {
+		const params = harnessParams(this.#session, WEB_SEARCH_BRIDGES, input);
 		const authStorage = this.#session.authStorage ?? (await discoverAuthStorage());
 		const sessionId = this.#session.getSessionId?.() ?? undefined;
 		return executeSearch(_toolCallId, params, {

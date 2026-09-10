@@ -30,6 +30,10 @@ export default class AuthGateway extends Command {
 			description:
 				"Disable inbound bearer-token auth (serve). Useful when bound to loopback — any caller is allowed.",
 		}),
+		"record-harness": Flags.boolean({
+			description:
+				"Record the harness surface of inbound Claude Code / Codex requests into the harness capture cache (serve). Pair with --no-auth for clients that send no bearer.",
+		}),
 		strict: Flags.boolean({
 			description:
 				"For `check`: additionally probe each credential against its provider's chat-completion endpoint. Slower; consumes a tiny amount of quota per credential.",
@@ -42,6 +46,7 @@ export default class AuthGateway extends Command {
 		"# Print the gateway bearer token (creates one on first run)\n  omp auth-gateway token",
 		"# Rotate the gateway bearer token\n  omp auth-gateway token --regenerate",
 		"# Run on loopback without any bearer (anyone on this host can call)\n  omp auth-gateway serve --no-auth",
+		"# Capture your own Claude Code / Codex harness surface (see --record-harness)\n  omp auth-gateway serve --no-auth --record-harness",
 		"# Show local gateway + broker config status\n  omp auth-gateway status",
 		"# Probe each broker credential to see which one is producing 401s\n  omp auth-gateway check",
 		"# Same, machine-readable for scripts\n  omp auth-gateway check --json",
@@ -61,6 +66,7 @@ export default class AuthGateway extends Command {
 				bind: flags.bind,
 				regenerate: flags.regenerate,
 				noAuth: flags["no-auth"],
+				recordHarness: flags["record-harness"],
 				strict: flags.strict,
 			},
 		};
