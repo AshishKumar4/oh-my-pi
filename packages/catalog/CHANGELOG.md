@@ -6,6 +6,10 @@
 
 - New `harness-profile` compat axis records the vendor request surface a model was post-trained on, so the harness recorder and the providers can serve that surface instead of omp's own: `claude-code` for `claude-opus-5`, `claude-fable-5` and `claude-fable-5-1` on the Anthropic Messages API, `codex` for `gpt-6-astra` and `gpt-5.6-sol` on the Codex route, and no profile for every other model. The pinned Codex client version is now `0.154.0`, matching the captured client so model discovery and `/responses` see the current client gate.
 
+- Added DeepSeek cost estimates that follow published peak/off-peak rates.
+- Added dated, announced price changes to the catalog, so rates switch on their effective date (e.g. DeepSeek Pro moving to Flash rates).
+
+- Added Command Code as a built-in provider with API-key login, live model discovery, per-model pricing, native OpenAI/Anthropic-compatible routing, cache-aware token usage, and TTFT metrics ([#11391](https://github.com/can1357/oh-my-pi/pull/11391) by [@CherkaSSH](https://github.com/CherkaSSH)).
 ## [18.1.16] - 2026-09-09
 
 - Updated Fire Pass (`firepass`) login validation probe to `accounts/fireworks/routers/glm-5p2-fast` and bundled `glm-5.2-fast` and `kimi-k3-fast` models in place of decommissioned `kimi-k2.6-turbo` ([#10859](https://github.com/can1357/oh-my-pi/pull/10859) by [@olegpulatov](https://github.com/olegpulatov)).
