@@ -23,6 +23,9 @@ export interface HarnessCacheStats {
 	input: number;
 	cacheRead: number;
 	cacheWrite: number;
+	// Token-weighted across all requests: cacheRead tokens over total prompt
+	// tokens. A different statistic from the per-request EMA/P95 in
+	// PromptCacheHealth, where each request counts once regardless of size.
 	hitPct: number;
 }
 
@@ -101,8 +104,16 @@ export function promptCacheP95(ratios: readonly number[]): number | undefined {
 }
 
 export interface PromptCacheHealth {
+	// Valid per-request ratios seen, counting every request including ratios that
+	// have since aged out of the retained P95 window below.
 	samples: number;
+	// EMA(0.3) over arrival-order per-request ratios. Each request counts once no
+	// matter its size, unlike HarnessCacheStats.hitPct which weights by tokens;
+	// the TUI indicator shows this per-request view, not the token-weighted one.
 	ema: number;
+	// Nearest-rank P95 over the retained window (the last
+	// PROMPT_CACHE_HEALTH_RING_SIZE valid requests), not all time. Undefined
+	// below the sample floor so the indicator can hold its placeholder.
 	p95: number | undefined;
 }
 
@@ -141,4 +152,97 @@ export function formatPromptCacheHealth(health: PromptCacheHealth): PromptCacheH
 	const ema = Math.round(health.ema * 100);
 	const p95 = Math.round(health.p95 * 100);
 	return { kind: "ready", full: `cache ${ema}% ema / ${p95}% p95`, compact: `cache ${ema}/${p95}` };
+}
+
+// P95 retains the last 100 valid per-request ratios. Nearest-rank P95 needs at
+// least 20 samples to resolve below the max (ceil(0.95N) < N), so 100 ranks a
+// full window on its 6th-largest ratio instead of an outlier. 100 doubles bound
+// render work to a short constant sort however long the session grows, and the
+// EMA has forgotten older requests by then anyway (a sample 20 back weighs
+// 0.3*0.7^19, under a tenth of a percent), so the window covers the same
+// effective horizon the EMA still responds to.
+export const PROMPT_CACHE_HEALTH_RING_SIZE = 100;
+
+export class PromptCacheHealthTracker {
+	#ema: number | undefined = undefined;
+	#valid = 0;
+	readonly #ring: number[] = [];
+	#head = 0;
+
+	add(sample: PromptCacheSample): void {
+		const ratio = promptCacheHitRatio(sample);
+		if (ratio === undefined) return;
+		this.#ema =
+			this.#ema === undefined
+				? ratio
+				: PROMPT_CACHE_HEALTH_EMA_ALPHA * ratio + (1 - PROMPT_CACHE_HEALTH_EMA_ALPHA) * this.#ema;
+		this.#valid += 1;
+		if (this.#ring.length < PROMPT_CACHE_HEALTH_RING_SIZE) {
+			this.#ring.push(ratio);
+		} else {
+			this.#ring[this.#head] = ratio;
+			this.#head = (this.#head + 1) % PROMPT_CACHE_HEALTH_RING_SIZE;
+		}
+	}
+
+	health(): PromptCacheHealth | undefined {
+		if (this.#ema === undefined) return undefined;
+		return {
+			samples: this.#valid,
+			ema: this.#ema,
+			p95: this.#valid >= PROMPT_CACHE_HEALTH_MIN_SAMPLES ? promptCacheP95(this.#ring) : undefined,
+		};
+	}
+}
+
+interface PromptCacheSessionCursor {
+	messages: readonly AgentMessage[];
+	consumed: number;
+	tail: AgentMessage | undefined;
+	tailUsage: PromptCacheSample | undefined;
+	tracker: PromptCacheHealthTracker;
+}
+
+const SESSION_CURSORS = new WeakMap<object, PromptCacheSessionCursor>();
+const NO_PROMPT_CACHE_MESSAGES: readonly AgentMessage[] = [];
+
+function assistantUsageOf(message: AgentMessage): PromptCacheSample | undefined {
+	if (message.role !== "assistant") return undefined;
+	return message.usage ?? undefined;
+}
+
+export function promptCacheHealthForSession(session: {
+	messages?: readonly AgentMessage[];
+}): PromptCacheHealth | undefined {
+	const messages = session.messages ?? NO_PROMPT_CACHE_MESSAGES;
+	let cursor = SESSION_CURSORS.get(session);
+	if (cursor === undefined || cursor.messages !== messages) {
+		cursor = {
+			messages,
+			consumed: 0,
+			tail: undefined,
+			tailUsage: undefined,
+			tracker: new PromptCacheHealthTracker(),
+		};
+		SESSION_CURSORS.set(session, cursor);
+	} else if (
+		cursor.consumed > messages.length ||
+		(cursor.consumed > 0 &&
+			(messages[cursor.consumed - 1] !== cursor.tail ||
+				(cursor.tail !== undefined && assistantUsageOf(cursor.tail) !== cursor.tailUsage)))
+	) {
+		cursor.tracker = new PromptCacheHealthTracker();
+		cursor.consumed = 0;
+		cursor.tail = undefined;
+		cursor.tailUsage = undefined;
+	}
+	for (let index = cursor.consumed; index < messages.length; index += 1) {
+		const usage = assistantUsageOf(messages[index]);
+		if (usage !== undefined) cursor.tracker.add(usage);
+	}
+	cursor.consumed = messages.length;
+	const tail = messages.length > 0 ? messages[messages.length - 1] : undefined;
+	cursor.tail = tail;
+	cursor.tailUsage = tail === undefined ? undefined : assistantUsageOf(tail);
+	return cursor.tracker.health();
 }

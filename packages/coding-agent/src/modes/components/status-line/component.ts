@@ -22,11 +22,7 @@ import { settings } from "../../../config/settings";
 import type { AgentSession } from "../../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../../session/auth-storage";
 import { limitMatchesActiveAccount } from "../../../slash-commands/helpers/active-oauth-account";
-import {
-	formatPromptCacheHealth,
-	promptCacheHealth,
-	promptCacheSamplesFromMessages,
-} from "../../../session/prompt-cache-stats";
+import { formatPromptCacheHealth, promptCacheHealthForSession } from "../../../session/prompt-cache-stats";
 import { type ActiveRepoContext, resolveActiveRepoContextSync } from "../../../utils/active-repo-context";
 import { withTimeoutSignal } from "../../../utils/fetch-timeout";
 import { GH_COMMAND_TIMEOUT_MS, github } from "../../../utils/github";
@@ -2299,8 +2295,7 @@ export class StatusLineComponent implements Component {
 	): { text: string; width: number } {
 		const empty = { text: "", width: 0 };
 		if (ctx.startupPlaceholder) return empty;
-		const messages = ctx.session.messages ?? [];
-		const health = promptCacheHealth(promptCacheSamplesFromMessages(messages));
+		const health = promptCacheHealthForSession(ctx.session);
 		if (!health) return empty;
 		const body = formatPromptCacheHealth(health);
 		const candidates = body.kind === "ready" ? [body.full, body.compact] : [body.body];
