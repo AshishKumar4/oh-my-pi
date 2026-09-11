@@ -1,10 +1,46 @@
 import type { AgentTool, ToolApprovalDecision } from "@oh-my-pi/pi-agent-core";
 import type { Static, TSchema, ToolNamespace } from "@oh-my-pi/pi-ai";
 import type { Settings } from "../config/settings";
+import { applyToolProxy } from "../extensibility/tool-proxy";
 import { nativeParams } from "./bridge";
+import type { HarnessToolBinding } from "./manifest";
 
 export interface HarnessFacadeHost {
 	readonly settings: Settings;
+}
+
+/** Wire name a registry tool presents under a manifest binding: the binding's rename, else the tool's own claim. */
+export function presentedWireName(tool: AgentTool, binding: HarnessToolBinding | undefined): string | undefined {
+	return binding?.wireName ?? tool.customWireName;
+}
+
+/**
+ * A registry tool as a harness profile presents it: the manifest's wire
+ * identity as own properties over the tool's own surface. Own properties
+ * matter — the agent loop spreads each tool into its request copy, which
+ * keeps own keys only. Everything the binding leaves alone forwards to the
+ * tool, so schema, description and argument handling stay live on the
+ * instance.
+ */
+class PresentedTool implements AgentTool {
+	declare readonly name: string;
+	declare readonly label: string;
+	declare readonly description: string;
+	declare readonly parameters: TSchema;
+	declare readonly execute: AgentTool["execute"];
+	declare readonly customWireName?: string;
+	declare readonly namespace?: ToolNamespace;
+
+	constructor(tool: AgentTool, binding: HarnessToolBinding) {
+		if (binding.wireName !== undefined) this.customWireName = binding.wireName;
+		if (binding.namespace !== undefined) this.namespace = { name: binding.namespace };
+		applyToolProxy(tool, this);
+	}
+}
+
+/** The tool itself when the profile leaves it alone; a projected copy when the manifest renames or groups it. */
+export function presentTool(tool: AgentTool, binding: HarnessToolBinding | undefined): AgentTool {
+	return binding === undefined ? tool : new PresentedTool(tool, binding);
 }
 
 export interface HarnessFacadeSpec<TWire extends TSchema = TSchema, TParams = unknown> {

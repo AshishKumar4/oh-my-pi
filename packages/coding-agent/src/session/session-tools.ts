@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Agent, AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { resolveDelegationBias } from "@oh-my-pi/pi-catalog/compat/delegation";
-import { resolveHarnessProfile } from "@oh-my-pi/pi-catalog/compat/harness";
+import { type HarnessProfile, resolveHarnessProfile } from "@oh-my-pi/pi-catalog/compat/harness";
 import { isRecord, logger, prompt, stringProperty, untilAborted } from "@oh-my-pi/pi-utils";
 import { reset as resetCapabilities } from "../capability";
 import type { EffectiveExtensionRoots } from "../capability/types";
@@ -14,9 +14,9 @@ import { CustomToolAdapter } from "../extensibility/custom-tools/wrapper";
 import type { ExtensionRunner, SourceInfo, ToolInfo } from "../extensibility/extensions";
 import { ExtensionToolWrapper } from "../extensibility/extensions/wrapper";
 import { loadSkills, type Skill, type SkillWarning, setActiveSkills } from "../extensibility/skills";
-import { harnessFacade } from "../harness/facade";
+import { harnessFacade, presentedWireName, presentTool } from "../harness/facade";
 import { harnessFacadeSpecs } from "../harness/facades";
-import { type HarnessToolBinding, harnessToolBinding } from "../harness/manifest";
+import { harnessToolBinding } from "../harness/manifest";
 import { type LocalProtocolOptions, stripXdUrlPrefix, XD_URL_PREFIX } from "../internal-urls";
 import { deduplicateMCPToolsByName } from "../mcp/tool-bridge";
 import { resolveMemoryBackend } from "../memory-backend/resolve";
@@ -189,25 +189,6 @@ interface XdevMountNoticeDetails {
 	removed: string[];
 }
 
-const kHarnessPresentation = Symbol("harnessPresentation");
-
-function declaredWireNameReader(tool: AgentTool): () => string | undefined {
-	for (let node: object | null = tool; node !== null; node = Object.getPrototypeOf(node)) {
-		const descriptor = Object.getOwnPropertyDescriptor(node, "customWireName");
-		if (!descriptor) continue;
-		const read = descriptor.get;
-		if (!read) {
-			const declared = descriptor.value;
-			return () => (typeof declared === "string" ? declared : undefined);
-		}
-		return () => {
-			const declared = read.call(tool);
-			return typeof declared === "string" ? declared : undefined;
-		};
-	}
-	return () => undefined;
-}
-
 /** Owns tool registration, presentation, prompt rebuilding, skills, and permissions. */
 export class SessionTools {
 	readonly #host: SessionToolsHost;
@@ -297,7 +278,6 @@ export class SessionTools {
 			}
 		}
 		for (const [name, tool] of this.#toolRegistry) {
-			this.#bindHarnessPresentation(tool);
 			if (isMCPToolName(name) && !this.#mcpManagerToolNames.has(name)) {
 				this.#extensionMcpTools.set(name, tool);
 			}
@@ -331,6 +311,14 @@ export class SessionTools {
 		for (const tool of host.agent.state.tools) this.#enabledToolNames.add(tool.name);
 		for (const name of this.#xdev?.mountedNames ?? []) this.#enabledToolNames.add(name);
 		this.#promptModelKey = this.#currentPromptModelKey();
+		// The construction slate carries the profile's wire identities from the
+		// start; facades join at the first applied selection.
+		const profile = this.#harnessProfile();
+		if (profile !== undefined) {
+			host.agent.setTools(
+				host.agent.state.tools.map(tool => presentTool(tool, harnessToolBinding(profile, tool.name))),
+			);
+		}
 	}
 
 	/** Mutable registry shared with controller hosts that inspect available tools. */
@@ -400,11 +388,12 @@ export class SessionTools {
 	}
 
 	#representActiveTools(): void {
+		const profile = this.#harnessProfile();
 		const activeTools = this.getActiveToolNames()
 			.map(name => this.#toolRegistry.get(name))
 			.filter((tool): tool is AgentTool => tool !== undefined)
-			.map(tool => this.#wrapToolForAcpPermission(tool));
-		this.#host.agent.setTools(this.#presentTools(activeTools, this.getEnabledToolNames()));
+			.map(tool => this.#wrapToolForAcpPermission(presentTool(tool, harnessToolBinding(profile, tool.name))));
+		this.#host.agent.setTools(this.#presentTools(activeTools, this.getEnabledToolNames(), profile));
 	}
 
 	#getActiveNonMCPToolNames(): string[] {
@@ -485,10 +474,18 @@ export class SessionTools {
 	hasBuiltInTool(name: string): boolean {
 		if (this.#builtInToolNames.has(name)) return true;
 		if (this.#toolRegistry.has(name)) return false;
+		const profile = this.#harnessProfile();
 		for (const builtInName of this.#builtInToolNames) {
-			if (this.#toolRegistry.get(builtInName)?.customWireName === name) return true;
+			const tool = this.#toolRegistry.get(builtInName);
+			if (tool && presentedWireName(tool, harnessToolBinding(profile, builtInName)) === name) return true;
 		}
 		return false;
+	}
+
+	/** Wire name a registry tool presents under the active model's harness profile. */
+	presentedWireName(name: string): string | undefined {
+		const tool = this.#toolRegistry.get(name);
+		return tool && presentedWireName(tool, harnessToolBinding(this.#harnessProfile(), name));
 	}
 
 	/** Updates source provenance when a live registry entry is replaced or restored. */
@@ -708,10 +705,12 @@ export class SessionTools {
 	}
 
 	#computeCodeModeDirectWireSignature(toolNames: readonly string[]): string {
+		const profile = this.#harnessProfile();
 		let signature = "";
 		for (const name of toolNames) {
 			const tool = this.#toolRegistry.get(name);
-			signature += `${name}\u0000${tool?.customWireName ?? name}\u0001`;
+			const wireName = tool && presentedWireName(tool, harnessToolBinding(profile, name));
+			signature += `${name}\u0000${wireName ?? name}\u0001`;
 		}
 		return signature;
 	}
@@ -732,38 +731,28 @@ export class SessionTools {
 		return this.getEnabledToolNames().filter(name => isMCPToolName(name) && this.#toolRegistry.has(name));
 	}
 
-	#harnessBinding(toolName: string): HarnessToolBinding | undefined {
+	#harnessProfile(): HarnessProfile | undefined {
 		const activeModel = this.#host.model();
-		if (!activeModel) return undefined;
-		const profile = resolveHarnessProfile(activeModel);
-		return profile === undefined ? undefined : harnessToolBinding(profile, toolName);
+		return activeModel === undefined ? undefined : resolveHarnessProfile(activeModel);
 	}
 
-	#bindHarnessPresentation(tool: AgentTool): void {
-		if (kHarnessPresentation in tool) return;
-		const declaredWireName = declaredWireNameReader(tool);
-		Object.defineProperties(tool, {
-			[kHarnessPresentation]: { value: true, enumerable: false, configurable: true },
-			customWireName: {
-				get: () => this.#harnessBinding(tool.name)?.wireName ?? declaredWireName(),
-				enumerable: true,
-				configurable: true,
-			},
-			namespace: {
-				get: () => {
-					const name = this.#harnessBinding(tool.name)?.namespace;
-					return name === undefined ? undefined : { name };
-				},
-				enumerable: true,
-				configurable: true,
-			},
-		});
+	/** Registry tools as `profile` presents them; the registry itself when no profile applies. */
+	#presentedRegistry(profile: HarnessProfile | undefined): Map<string, AgentTool> {
+		if (profile === undefined) return this.#toolRegistry;
+		const presented = new Map<string, AgentTool>();
+		for (const [name, tool] of this.#toolRegistry) {
+			presented.set(name, presentTool(tool, harnessToolBinding(profile, name)));
+		}
+		return presented;
 	}
 
-	#presentTools(tools: AgentTool[], enabledToolNames: readonly string[]): AgentTool[] {
+	/** Appends `profile`'s facades to an already-presented tool list, replacing the targets they stand in for. */
+	#presentTools(
+		tools: AgentTool[],
+		enabledToolNames: readonly string[],
+		profile: HarnessProfile | undefined,
+	): AgentTool[] {
 		this.#mountedFacades.clear();
-		const activeModel = this.#host.model();
-		const profile = activeModel ? resolveHarnessProfile(activeModel) : undefined;
 		if (profile === undefined) return tools;
 		const replaced = new Set<string>();
 		const facades: AgentTool[] = [];
@@ -911,6 +900,7 @@ export class SessionTools {
 		signal?.throwIfAborted();
 		toolNames = normalizeToolNames(toolNames);
 		const activeModel = this.#host.model();
+		const profile = activeModel === undefined ? undefined : resolveHarnessProfile(activeModel);
 		const codeMode = resolveCodeMode({
 			provider: activeModel?.provider ?? "",
 			toolMode: activeModel?.toolMode,
@@ -918,7 +908,7 @@ export class SessionTools {
 			extraDirectTools: this.#host.settings.get("providers.openai-codex.codeModeDirectTools"),
 			enabledToolNames: toolNames,
 			evalTransportAvailable: this.#hasCodeModeEvalTransport(),
-			...(activeModel && { harnessProfile: resolveHarnessProfile(activeModel) }),
+			...(activeModel && { harnessProfile: profile }),
 		});
 		let builtInWriteAvailable = this.#builtInToolNames.has("write");
 		const fullWriteSelected =
@@ -946,9 +936,9 @@ export class SessionTools {
 			const goalRegistration = this.#ensureGoalRegistered?.();
 			if (goalRegistration) await untilAborted(signal, goalRegistration);
 		}
-		for (const tool of this.#toolRegistry.values()) this.#bindHarnessPresentation(tool);
+		const presentedRegistry = this.#presentedRegistry(profile);
 		const selectedTools = toolNames.flatMap(name => {
-			const tool = this.#toolRegistry.get(name);
+			const tool = presentedRegistry.get(name);
 			return tool ? [{ name, tool }] : [];
 		});
 		const xdevReadAvailable = this.#builtInToolNames.has("read") && selectedTools.some(({ name }) => name === "read");
@@ -986,9 +976,8 @@ export class SessionTools {
 			if (builtInWriteAvailable) this.#builtInToolNames.add("write");
 		}
 		if (transportNeeded && builtInWriteAvailable) {
-			const write = this.#toolRegistry.get("write");
+			const write = presentedRegistry.get("write");
 			if (write && !validToolNames.includes("write")) {
-				this.#bindHarnessPresentation(write);
 				tools.push(this.#wrapToolForAcpPermission(write));
 				validToolNames.push("write");
 			}
@@ -1013,7 +1002,7 @@ export class SessionTools {
 			appliedNames = validToolNames.filter(name => codeMode.directToolNames.has(name));
 			nextCodeModeNamespacesInfo = buildToolNamespacesInfo({
 				tools: validToolNames.flatMap(name => {
-					const tool = this.#toolRegistry.get(name);
+					const tool = presentedRegistry.get(name);
 					if (!tool) return [];
 					return [
 						{
@@ -1077,7 +1066,7 @@ export class SessionTools {
 				const promptToolNames = codeMode.active ? [...this.#enabledToolNames] : appliedNames;
 				const promptTools = codeMode.active
 					? promptToolNames.flatMap(name => {
-							const tool = this.#toolRegistry.get(name);
+							const tool = presentedRegistry.get(name);
 							return tool ? [tool] : [];
 						})
 					: appliedTools;
@@ -1094,7 +1083,7 @@ export class SessionTools {
 				} else if (forcePromptRefresh || signature !== this.#lastAppliedToolSignature) {
 					const built = await untilAborted(
 						signal,
-						this.#rebuildSystemPrompt(promptToolNames, this.#toolRegistry, { directToolNames }),
+						this.#rebuildSystemPrompt(promptToolNames, presentedRegistry, { directToolNames }),
 					);
 					rebuiltSystemPrompt = built.systemPrompt;
 					rebuiltSignature = signature;
@@ -1126,7 +1115,7 @@ export class SessionTools {
 
 		try {
 			this.#notifyXdevMountDelta(previousMounted);
-			this.#host.agent.setTools(this.#presentTools(appliedTools, [...this.#enabledToolNames]));
+			this.#host.agent.setTools(this.#presentTools(appliedTools, [...this.#enabledToolNames], profile));
 			this.#host.setCodeModeNamespacesInfo?.(nextCodeModeNamespacesInfo);
 			this.#codeModeDirectWireSignature = codeMode.active
 				? this.#computeCodeModeDirectWireSignature(appliedNames)
@@ -1552,7 +1541,8 @@ export class SessionTools {
 		const directToolNames = this.#codeModeDirectWireSignature === undefined ? undefined : activeToolNames;
 		this.#setActiveToolNames?.(this.#toolPredicateNames ?? activeToolNames);
 		const previousBaseSystemPrompt = this.#baseSystemPrompt;
-		const built = await this.#rebuildSystemPrompt(promptToolNames, this.#toolRegistry, { directToolNames });
+		const presentedRegistry = this.#presentedRegistry(this.#harnessProfile());
+		const built = await this.#rebuildSystemPrompt(promptToolNames, presentedRegistry, { directToolNames });
 		if (this.#host.isDisposed()) return;
 		this.#baseSystemPrompt = built.systemPrompt;
 		this.#basePromptXdevNames = new Set(built.xdevCatalogNames);
@@ -1569,7 +1559,7 @@ export class SessionTools {
 		// the same tool set does not re-rebuild on top of the explicit refresh we
 		// just performed (and conversely, a different set forces a fresh rebuild).
 		const promptTools = promptToolNames
-			.map(name => this.#toolRegistry.get(name))
+			.map(name => presentedRegistry.get(name))
 			.filter((tool): tool is AgentTool => tool != null);
 		this.#lastAppliedToolSignature = this.#computeAppliedToolSignature(promptToolNames, promptTools, directToolNames);
 	}
