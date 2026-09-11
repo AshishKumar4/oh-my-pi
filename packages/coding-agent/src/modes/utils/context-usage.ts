@@ -5,6 +5,7 @@ import type { Tool as AiTool, Model } from "@oh-my-pi/pi-ai";
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { formatNumber } from "@oh-my-pi/pi-utils";
 import type { Skill } from "../../extensibility/skills";
+import { type HarnessPrompt, servedHarnessPrompt } from "../../harness/capture";
 import type { AgentSession } from "../../session/agent-session";
 import { resolveSpeculationMethod } from "../../session/compaction-methods";
 import { estimateInlineSavings, type SnapcompactSavingsEstimate } from "../../session/snapcompact-inline";
@@ -83,6 +84,7 @@ export function computeCompactionBoundaries(
 /** Stable inputs used to cache non-message token estimates. */
 export interface NonMessageTokenSource {
 	readonly systemPrompt?: string[];
+	readonly model?: Model;
 	readonly agent?: {
 		readonly state?: {
 			readonly tools?: ReadonlyArray<Pick<Tool, "name" | "description" | "parameters">>;
@@ -151,8 +153,9 @@ export function estimateToolSchemaTokens(
 
 /**
  * Compute just the NON-MESSAGE token total: system prompt (with its skills
- * section subtracted, since skills are tokenized separately) + system context
- * (the rest of the system-prompt array) + tools + skills.
+ * section subtracted from whichever block carries it, since skills are
+ * tokenized separately) + system context (the rest of the system-prompt
+ * array) + tools + skills.
  *
  * Exposed so callers like `StatusLineComponent` can cache the non-message
  * total separately from the message total. Non-message inputs (skills,
@@ -177,6 +180,9 @@ interface NonMessageTokenCache {
 	// The Agent swaps its Tokenizer instance when the model's encoding changes,
 	// so instance identity doubles as the encoding key.
 	tokenizerRef: Tokenizer;
+	// Which block carries the skills listing depends on whether block 0 is the
+	// served harness prompt; the loaded prompt object is stable per profile.
+	harnessRef: HarnessPrompt | undefined;
 	tokens: number | undefined;
 	breakdown:
 		| {
@@ -199,17 +205,27 @@ function nonMessageTokenCacheEntry(session: NonMessageTokenSource, tokenizer: To
 	const systemPromptRef = session.systemPrompt ?? EMPTY_STRING_PARTS;
 	const toolsRef = session.agent?.state?.tools ?? EMPTY_TOOLS;
 	const skillsRef = session.skills ?? EMPTY_SKILLS;
+	const harnessRef = servedHarnessPrompt(session.model);
 	let entry = cachedSession[NON_MESSAGE_TOKEN_CACHE];
 	if (
 		entry &&
 		entry.systemPromptRef === systemPromptRef &&
 		entry.toolsRef === toolsRef &&
 		entry.skillsRef === skillsRef &&
-		entry.tokenizerRef === tokenizer
+		entry.tokenizerRef === tokenizer &&
+		entry.harnessRef === harnessRef
 	) {
 		return entry;
 	}
-	entry = { systemPromptRef, toolsRef, skillsRef, tokenizerRef: tokenizer, tokens: undefined, breakdown: undefined };
+	entry = {
+		systemPromptRef,
+		toolsRef,
+		skillsRef,
+		tokenizerRef: tokenizer,
+		harnessRef,
+		tokens: undefined,
+		breakdown: undefined,
+	};
 	cachedSession[NON_MESSAGE_TOKEN_CACHE] = entry;
 	return entry;
 }
@@ -250,8 +266,14 @@ export function computeNonMessageBreakdown(
 			: estimateSkillsTokens(renderedSkills(session.skills ?? EMPTY_SKILLS, tools), tokenizer);
 	const toolsTokens = estimateToolSchemaTokens(tools, tokenizer);
 	const systemPromptParts = session.systemPrompt ?? EMPTY_STRING_PARTS;
-	const systemContextTokens = tokenizer.countTokens(Array.from(systemPromptParts.slice(1), part => part ?? ""));
-	const systemPromptTokens = Math.max(0, tokenizer.countTokens(systemPromptParts[0] ?? "") - skillsTokens);
+	const leadTokens = tokenizer.countTokens(systemPromptParts[0] ?? "");
+	const restTokens = tokenizer.countTokens(Array.from(systemPromptParts.slice(1), part => part ?? ""));
+	// Under a harness profile `buildSystemPrompt` serves the recorded vendor
+	// prompt as block 0 and moves omp's own template — the block carrying the
+	// skills listing — to block 1, so the subtraction has to follow it.
+	const vendorLead = entry.harnessRef !== undefined && systemPromptParts[0] === entry.harnessRef.text;
+	const systemPromptTokens = vendorLead ? leadTokens : Math.max(0, leadTokens - skillsTokens);
+	const systemContextTokens = vendorLead ? Math.max(0, restTokens - skillsTokens) : restTokens;
 	const breakdown = { skillsTokens, toolsTokens, systemContextTokens, systemPromptTokens };
 	entry.breakdown = breakdown;
 	return breakdown;

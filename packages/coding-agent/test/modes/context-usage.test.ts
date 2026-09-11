@@ -6,9 +6,14 @@
  * internals, which massively overcounts.
  */
 import { describe, expect, it } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import { Tokenizer } from "@oh-my-pi/pi-agent-core";
+import type { Model } from "@oh-my-pi/pi-ai";
 import { arkToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { HARNESS_CAPTURE_SCHEMA, loadHarnessPrompt } from "@oh-my-pi/pi-coding-agent/harness/capture";
 import {
 	type ContextBreakdown,
 	computeNonMessageBreakdown,
@@ -17,8 +22,17 @@ import {
 	renderContextUsage,
 } from "@oh-my-pi/pi-coding-agent/modes/utils/context-usage";
 import { applyToolProxy } from "../../src/extensibility/tool-proxy";
+import { withHarnessCacheDir } from "../helpers/harness";
 
 const tokenizer = new Tokenizer();
+
+function required(model: Model | undefined, what: string): Model {
+	if (!model) throw new Error(`expected ${what} in the bundled catalog`);
+	return model;
+}
+
+const FABLE = required(getBundledModel("anthropic", "claude-fable-5-1"), "anthropic/claude-fable-5-1");
+const SONNET = required(getBundledModel("anthropic", "claude-sonnet-4-5"), "anthropic/claude-sonnet-4-5");
 
 /** An arktype-shaped callable schema from an external arktype copy: a plain
  * function carrying `toJsonSchema`/`assert` that — unlike omptype schemas —
@@ -237,6 +251,64 @@ describe("computeNonMessageBreakdown skills filtering", () => {
 		const b = computeNonMessageBreakdown(session([], [hidden, visible]), tokenizer);
 		expect(b.skillsTokens).toBe(0);
 		expect(b.systemPromptTokens).toBe(computeNonMessageBreakdown(session([], []), tokenizer).systemPromptTokens);
+	});
+});
+
+/**
+ * Contract: the skills subtraction lands on the block that carries the skills
+ * listing. With a harness capture served, `buildSystemPrompt` makes block 0 the
+ * vendor prompt and moves omp's template (listing included) to block 1, so
+ * subtracting from block 0 understated the headline total by the skills size
+ * and double-counted skills under System context. Either way the three
+ * categories must sum to the true rendered total.
+ */
+describe("computeNonMessageBreakdown under a served harness prompt", () => {
+	const dirs = withHarnessCacheDir("omp-context-usage-harness-");
+	const readTool = { name: "read", description: "read files", parameters: {} };
+	const skill = { name: "deploy", description: "ship the service to production", filePath: "/s/d.md" };
+	const ompTemplate = "You are an agent.\nSkills:\n- deploy: ship the service to production\n";
+	const capture = {
+		schema: HARNESS_CAPTURE_SCHEMA,
+		profile: "claude-code",
+		clientVersion: "2.1.267.d7f",
+		entrypoint: "cli",
+		capturedAt: "2026-09-09T12:00:00.000Z",
+		instructions: ["You are an interactive agent.\n\n# Tone\n\nBe terse."],
+		tools: ["Bash", "Read"],
+		ambient: [],
+	};
+
+	async function serveCapture(): Promise<string> {
+		const dir = path.join(dirs.cache, "claude-code");
+		await fs.mkdir(dir, { recursive: true });
+		await Bun.write(path.join(dir, "2.1.267.d7f-cli.json"), JSON.stringify(capture));
+		const served = await loadHarnessPrompt("claude-code");
+		if (served === null) throw new Error("expected the capture to load");
+		return served.text;
+	}
+
+	function session(systemPrompt: string[], model: Model | undefined) {
+		return { systemPrompt, model, agent: { state: { tools: [readTool] } }, skills: [skill] } as never;
+	}
+
+	it("subtracts skills from omp's template block, not the vendor block", async () => {
+		const vendor = await serveCapture();
+		const blocks = [vendor, ompTemplate];
+		const b = computeNonMessageBreakdown(session(blocks, FABLE), tokenizer);
+		expect(b.skillsTokens).toBeGreaterThan(0);
+		expect(b.systemPromptTokens).toBe(tokenizer.countTokens(vendor));
+		expect(b.systemContextTokens).toBe(tokenizer.countTokens(ompTemplate) - b.skillsTokens);
+		expect(b.skillsTokens + b.systemPromptTokens + b.systemContextTokens).toBe(tokenizer.countTokens(blocks));
+	});
+
+	it("keeps the subtraction on block 0 when the model does not serve that capture", async () => {
+		await serveCapture();
+		const blocks = [ompTemplate, "Extra context block."];
+		const b = computeNonMessageBreakdown(session(blocks, SONNET), tokenizer);
+		expect(b.skillsTokens).toBeGreaterThan(0);
+		expect(b.systemPromptTokens).toBe(tokenizer.countTokens(ompTemplate) - b.skillsTokens);
+		expect(b.systemContextTokens).toBe(tokenizer.countTokens("Extra context block."));
+		expect(b.skillsTokens + b.systemPromptTokens + b.systemContextTokens).toBe(tokenizer.countTokens(blocks));
 	});
 });
 
