@@ -3,7 +3,8 @@ import { streamSimple } from "@oh-my-pi/pi-ai";
 import type { CacheControlEphemeral, MessageCreateParams } from "@oh-my-pi/pi-ai/providers/anthropic-wire";
 import type { CacheRetention, Context, FetchImpl, Model, ProviderSessionState } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import { withOfficialAnthropicEndpoint } from "./helpers";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { withEnv, withOfficialAnthropicEndpoint } from "./helpers";
 
 const CACHE_REFRESH_DELAY_MS = 5 * 60_000 - 15_000;
 const CACHE_TOKENS = 1_200;
@@ -25,6 +26,8 @@ const thinkingModel: Model<"anthropic-messages"> = buildModel({
 	...model,
 	reasoning: true,
 });
+
+const harnessModel = getBundledModel<"anthropic-messages">("anthropic", "claude-opus-5");
 
 const context: Context = {
 	messages: [{ role: "user", content: "Keep this prefix warm.", timestamp: 1 }],
@@ -313,5 +316,26 @@ describe("Anthropic prompt-cache refresh", () => {
 		for (const cc of breakpoints) {
 			expect(cc.ttl).toBe("1h");
 		}
+	});
+
+	it("never installs the keep-warm loop under the claude-code profile", async () => {
+		vi.useFakeTimers();
+		const capture: FetchCapture = { bodies: [], thinkingRefreshAborted: false };
+		const fetch = createFetch(["ordinary-write"], capture);
+		const states = createProviderSessionState();
+
+		await withEnv({ PI_CACHE_RETENTION: undefined }, () => finishRequest(fetch, states, { model: harnessModel }));
+		vi.advanceTimersByTime(CACHE_REFRESH_DELAY_MS * 2);
+		await Promise.resolve();
+
+		expect(states.has("anthropic-cache-refresh")).toBe(false);
+		expect(capture.bodies).toHaveLength(1);
+		const blocks = (capture.bodies[0]?.messages ?? []).flatMap(message =>
+			Array.isArray(message.content) ? message.content : [],
+		);
+		const breakpoints = blocks
+			.map(block => ("cache_control" in block ? (block.cache_control ?? undefined) : undefined))
+			.filter((cc): cc is CacheControlEphemeral => cc != null);
+		expect(breakpoints.map(cc => cc.ttl)).toEqual(["1h"]);
 	});
 });

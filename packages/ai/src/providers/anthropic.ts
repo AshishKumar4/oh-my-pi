@@ -54,7 +54,7 @@ import {
 	isRecord,
 	normalizeSystemPrompts,
 	normalizeToolCallId,
-	resolveCacheRetention,
+	resolveModelCacheRetention,
 } from "../utils";
 import { createAbortSourceTracker } from "../utils/abort";
 import {
@@ -569,12 +569,9 @@ function getCacheControl(
 	// Five-minute writes are the cheapest cache population strategy, so they
 	// are the default; longer retention is an explicit PI_CACHE_RETENTION or
 	// request override, and idle sessions keep the short entry warm with
-	// bounded read-only refreshes. The claude-code harness profile is the one
-	// place the default is 1h: the captured client writes every breakpoint
-	// at `ttl: "1h"` on the same OAuth subscription, so the profile takes the
-	// vendor's own cache exposure. An explicit setting still wins either way.
-	const profileRetention = resolveHarnessProfile(model) === "claude-code" ? "long" : "short";
-	const retention = resolveCacheRetention(cacheRetention, profileRetention);
+	// bounded read-only refreshes. resolveModelCacheRetention raises the
+	// fallback to 1h under the claude-code harness profile.
+	const retention = resolveModelCacheRetention(model, cacheRetention);
 	if (retention === "none") {
 		return { retention };
 	}

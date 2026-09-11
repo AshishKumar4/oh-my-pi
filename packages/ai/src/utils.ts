@@ -1,3 +1,5 @@
+import { resolveHarnessProfile } from "@oh-my-pi/pi-catalog/compat/harness";
+import type { Model } from "@oh-my-pi/pi-catalog/types";
 import { $env } from "@oh-my-pi/pi-utils";
 import type { ResponseInput, ResponseInputItem } from "./providers/openai-responses-wire";
 import { redactSensitiveCredentials } from "./providers/transform-messages";
@@ -498,4 +500,16 @@ export function resolveCacheRetention(
 	const env = $env.PI_CACHE_RETENTION;
 	if (env === "long" || env === "short" || env === "none") return env;
 	return fallback;
+}
+
+/**
+ * `resolveCacheRetention` with the provider fallback derived from the model:
+ * the `claude-code` harness profile falls back to `long`, because the client
+ * it impersonates writes every breakpoint at `ttl: "1h"` on the same OAuth
+ * subscription; everything else keeps the cheaper five-minute writes. Every
+ * Anthropic site that decides on retention — breakpoint TTL, the idle
+ * keep-warm loop and its replay — must consult this one rule so they agree.
+ */
+export function resolveModelCacheRetention(model: Model, cacheRetention?: CacheRetention): CacheRetention {
+	return resolveCacheRetention(cacheRetention, resolveHarnessProfile(model) === "claude-code" ? "long" : "short");
 }

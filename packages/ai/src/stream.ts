@@ -64,6 +64,7 @@ import type {
 	Api,
 	AssistantMessage,
 	AssistantMessageEvent,
+	CacheRetention,
 	Context,
 	FetchImpl,
 	Model,
@@ -74,7 +75,7 @@ import type {
 	ThinkingBudgets,
 	ToolChoice,
 } from "./types";
-import { getHeaderCaseInsensitive, resolveCacheRetention } from "./utils";
+import { getHeaderCaseInsensitive, resolveCacheRetention, resolveModelCacheRetention } from "./utils";
 import { AssistantMessageEventStream } from "./utils/event-stream";
 import { isFoundryEnabled } from "./utils/foundry";
 import { applyGlyphCodec } from "./utils/glyph-codec";
@@ -1302,6 +1303,7 @@ function createAnthropicCacheRefreshPlan<TApi extends Api>(
 	model: Model<TApi>,
 	context: Context,
 	options: SimpleStreamOptions | undefined,
+	cacheRetention: CacheRetention,
 	payload: MessageCreateParamsStreaming,
 ): AnthropicCacheRefreshPlan {
 	const thinkingEnabled = isAnthropicThinkingActive(model, payload);
@@ -1315,7 +1317,7 @@ function createAnthropicCacheRefreshPlan<TApi extends Api>(
 				...options,
 				acceptEmptyResponse: true,
 				anthropicCacheRefreshRequest: !thinkingEnabled,
-				cacheRetention: "short",
+				cacheRetention,
 				maxTokens: thinkingEnabled ? options?.maxTokens : 0,
 				onPayload: () => ({
 					...payload,
@@ -1376,7 +1378,10 @@ function streamSimpleWithAnthropicCacheRefresh<TApi extends Api>(
 	} else if (existingState) {
 		return streamSimpleRequest(model, context, options);
 	}
-	if (!supportsAnthropicCacheRefresh(model) || resolveCacheRetention(options.cacheRetention) !== "short") {
+	// The keep-warm loop only makes sense for five-minute entries; the resolved
+	// retention is reused by the replay so both requests agree on the TTL.
+	const cacheRetention = resolveModelCacheRetention(model, options.cacheRetention);
+	if (!supportsAnthropicCacheRefresh(model) || cacheRetention !== "short") {
 		return streamSimpleRequest(model, context, options);
 	}
 
@@ -1410,7 +1415,10 @@ function streamSimpleWithAnthropicCacheRefresh<TApi extends Api>(
 		) {
 			return;
 		}
-		refreshState.arm(createAnthropicCacheRefreshPlan(model, context, options, capturedPayload), cacheTouchedAtMs);
+		refreshState.arm(
+			createAnthropicCacheRefreshPlan(model, context, options, cacheRetention, capturedPayload),
+			cacheTouchedAtMs,
+		);
 	};
 
 	void (async () => {
