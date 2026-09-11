@@ -566,10 +566,15 @@ function getCacheControl(
 	model: Model<"anthropic-messages">,
 	cacheRetention: CacheRetention | undefined,
 ): { retention: CacheRetention; cacheControl?: AnthropicCacheControl } {
-	// Five-minute writes are the cheapest cache population strategy. Longer
-	// retention remains an explicit PI_CACHE_RETENTION/request override; idle
-	// sessions keep the short entry warm with bounded read-only refreshes.
-	const retention = resolveCacheRetention(cacheRetention, "short");
+	// Five-minute writes are the cheapest cache population strategy, so they
+	// are the default; longer retention is an explicit PI_CACHE_RETENTION or
+	// request override, and idle sessions keep the short entry warm with
+	// bounded read-only refreshes. The claude-code harness profile is the one
+	// place the default is 1h: the captured client writes every breakpoint
+	// at `ttl: "1h"` on the same OAuth subscription, so the profile takes the
+	// vendor's own cache exposure. An explicit setting still wins either way.
+	const profileRetention = resolveHarnessProfile(model) === "claude-code" ? "long" : "short";
+	const retention = resolveCacheRetention(cacheRetention, profileRetention);
 	if (retention === "none") {
 		return { retention };
 	}

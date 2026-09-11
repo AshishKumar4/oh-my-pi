@@ -48,7 +48,7 @@
 	"ompFraming": {
 		"family": "anthropic-messages",
 		"systemLayout": ["billing-header", "identity", "prompt"],
-		"cachedSystemSlots": ["identity:ephemeral", "prompt-last:ephemeral"],
+		"cachedSystemSlots": ["identity:ephemeral/1h", "prompt-last:ephemeral/1h"],
 		"inventoryCarrier": "tools",
 		"namespaceStructure": null,
 		"envelope": {
@@ -78,9 +78,7 @@
 		"schemaForms": ["object|additionalProperties,properties,required"],
 		"argumentDocStyle": "inline-property-descriptions"
 	},
-	"documentedFramingDeltas": {
-		"cachedSystemSlots": "Breakpoint placement matches the capture — the identity block and the last system block are both anchored under the profile (`applyHeadCaching`, packages/ai/src/providers/anthropic.ts). Only the TTL half differs: the captured client writes both at `ttl: \"1h\"`, while omp writes both at whatever `getCacheControl` resolves, which is the 5-minute default unless the user opts in via `providers.cacheRetention: \"long\"` / `PI_CACHE_RETENTION=long` (then both carry `ttl: \"1h\"` and this projection matches the vendor's exactly). Not defaulted to 1h on purpose: 1h writes carry a price premium and their effect on an Anthropic subscription quota under omp's session shape (larger prompts, subagents, more turns) is unmeasured, so the user opts in with the number in front of them. Reported, not fixed here."
-	},
+	"documentedFramingDeltas": {},
 	"documentedInventoryDeltas": {
 		"declarationForms": "omp adds Anthropic's `eager_input_streaming` beta flag to every declaration (from catalog compat, not the profile) and `strict: true` to schema-strict tools; the captured client sends exactly `{description, input_schema, name}`. Behaviour-neutral for the backend, but a fingerprint difference on every request.",
 		"schemaForms": "the captured client emits `\"$schema\": \"https://json-schema.org/draft/2020-12/schema\"` on every `input_schema`; omp emits none. Same schema semantics, different bytes.",

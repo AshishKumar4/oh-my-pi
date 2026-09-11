@@ -131,12 +131,8 @@ describe("anthropic claude-code harness surface", () => {
 		expect(result.content.filter(block => block.type === "toolCall").map(block => block.name)).toEqual(["bash"]);
 	});
 
-	it("anchors the identity block and the last system block at the same retention", async () => {
-		expect(await cachedSystemSlots(harnessModel)).toEqual(["identity:ephemeral", "prompt-last:ephemeral"]);
-		expect(await cachedSystemSlots(harnessModel, "long")).toEqual([
-			"identity:ephemeral/1h",
-			"prompt-last:ephemeral/1h",
-		]);
+	it("anchors the identity block and the last system block at 1h by default", async () => {
+		expect(await cachedSystemSlots(harnessModel)).toEqual(["identity:ephemeral/1h", "prompt-last:ephemeral/1h"]);
 	});
 
 	it("lets an explicit short retention win over the profile", async () => {
