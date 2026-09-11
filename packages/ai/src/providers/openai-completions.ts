@@ -109,7 +109,7 @@ import {
 	shouldDropAutoToolChoiceForReasoning,
 	shouldRetryWithoutStrictTools,
 } from "./openai-shared";
-import { transformMessages } from "./transform-messages";
+import { declaredToolNames, facadeToolCallReplay, transformMessages } from "./transform-messages";
 import {
 	isOpenAICompletionsVisionSupported,
 	joinTextWithImagePlaceholder,
@@ -1978,6 +1978,7 @@ export function convertMessages(
 		duplicateToolCallIdSuffixPrefix,
 		compat,
 	);
+	const declaredNames = declaredToolNames(context.tools);
 
 	const remappedToolCallIds = new Map<string, string[]>();
 	let generatedToolCallIdCounter = 0;
@@ -2290,12 +2291,13 @@ export function convertMessages(
 				assistantMsg.tool_calls = toolCalls.map((tc, toolCallIndex) => {
 					const toolCallId = ensureToolCallId(tc.id, `${i}:${toolCallIndex}:${tc.name}`, msg);
 					rememberToolCallId(tc.id, toolCallId);
+					const facade = facadeToolCallReplay(tc, declaredNames);
 					const replayedToolCall: OpenAICompletionsFunctionToolCall = {
 						id: normalizeMistralToolId(toolCallId, compat.requiresMistralToolIds),
 						type: "function",
 						function: {
-							name: tc.name,
-							arguments: serializeToolArguments(tc.arguments),
+							name: facade?.name ?? tc.name,
+							arguments: serializeToolArguments(facade?.arguments ?? tc.arguments),
 						},
 					};
 					const extraContent = parseGeminiThoughtSignatureExtraContent(tc.thoughtSignature);

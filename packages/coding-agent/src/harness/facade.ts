@@ -46,7 +46,7 @@ export function harnessFacade(target: AgentTool, spec: HarnessFacadeSpec, host: 
 	return {
 		name: spec.wireName,
 		persistAs: target.name,
-		toEventArgs: toParams,
+		toNativeArgs: toParams,
 		label: target.label,
 		description: spec.description,
 		parameters: spec.parameters,

@@ -116,7 +116,7 @@ import type {
 	ResponseStreamEvent,
 } from "./openai-responses-wire";
 import { applyInferenceHeaders, setHeaderIfAbsent } from "./inference-headers";
-import { transformMessages } from "./transform-messages";
+import { declaredToolNames, facadeToolCallReplay, transformMessages } from "./transform-messages";
 import { joinTextWithImagePlaceholder, NON_VISION_IMAGE_PLACEHOLDER, partitionVisionContent } from "./vision-guard";
 
 /**
@@ -1927,6 +1927,7 @@ export function buildResponsesInput<TApi extends Api>(options: BuildResponsesInp
 	const customToolWireNameMap = supportsCustomToolCalls
 		? undefined
 		: buildCustomToolWireNameMap(options.context.tools);
+	const declaredNames = declaredToolNames(options.context.tools);
 	let knownCallIds = new Set<string>();
 	const customCallIds = new Set<string>();
 	const computerCallIds = new Set<string>();
@@ -2066,6 +2067,7 @@ export function buildResponsesInput<TApi extends Api>(options: BuildResponsesInp
 				computerCallIds,
 				options.requiresReasoningReplayForAllTurns ?? false,
 				options.requiresReasoningReplayForToolCalls ?? false,
+				declaredNames,
 			);
 			const outputItems = suppressHiddenEmptyFallback
 				? sanitizeOpenAIResponsesAssistantFallbackItemsForReplay(convertedOutputItems)
@@ -2135,6 +2137,7 @@ export function convertResponsesAssistantMessage<TApi extends Api>(
 	computerCallIds?: Set<string>,
 	requiresReasoningReplayForAllTurns = false,
 	requiresReasoningReplayForToolCalls = false,
+	declaredNames?: ReadonlySet<string>,
 ): ResponseInput {
 	const outputItems: ResponseInput = [];
 	let unsignedTextBlocks = 0;
@@ -2264,17 +2267,19 @@ export function convertResponsesAssistantMessage<TApi extends Api>(
 			} as ResponseInput[number]);
 			continue;
 		}
+		const facade = facadeToolCallReplay(block, declaredNames);
 		const functionName =
 			block.customWireName && !supportsCustomToolCalls
 				? (customToolWireNameMap?.get(block.customWireName) ?? block.customWireName)
-				: (block.wireName ?? block.name);
+				: (facade?.name ?? block.wireName ?? block.name);
+		const namespace = facade?.native ? undefined : block.namespace;
 		outputItems.push({
 			type: "function_call",
 			...(itemId ? { id: itemId } : {}),
 			call_id: normalized.callId,
 			name: functionName,
-			arguments: stringifyJson(block.arguments) ?? "null",
-			...(block.namespace ? { namespace: block.namespace } : {}),
+			arguments: stringifyJson(facade?.arguments ?? block.arguments) ?? "null",
+			...(namespace ? { namespace } : {}),
 		});
 	}
 

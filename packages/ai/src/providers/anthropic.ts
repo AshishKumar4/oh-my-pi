@@ -116,7 +116,7 @@ import {
 } from "./github-copilot-headers";
 import { getOpenAIPromptCacheKey } from "./openai-shared";
 import { applyInferenceHeaders } from "./inference-headers";
-import { transformMessages } from "./transform-messages";
+import { declaredToolNames, facadeToolCallReplay, transformMessages } from "./transform-messages";
 import { NON_VISION_IMAGE_PLACEHOLDER } from "./vision-guard";
 
 export type AnthropicHeaderOptions = {
@@ -938,6 +938,12 @@ function encodeAnthropicToolName(
 	return isOAuthToken ? applyClaudeToolPrefix(name) : name;
 }
 
+/**
+ * Replay name for a single-identity call: no facade involved, or a facade
+ * block persisted before `nativeArguments` existed. Prefers the active map,
+ * keeps the persisted vendor name only while the claude-code profile is
+ * active, and otherwise re-encodes the omp name.
+ */
 function replayAnthropicToolName(
 	name: string,
 	wireName: string | undefined,
@@ -949,6 +955,34 @@ function replayAnthropicToolName(
 	if (activeWireName !== undefined) return activeWireName;
 	if (wireName !== undefined && resolveHarnessProfile(model) === "claude-code") return wireName;
 	return encodeAnthropicToolName(name, isOAuthToken, model.compat.escapeBuiltinToolNames, false, harnessToolNames);
+}
+
+function replayAnthropicToolCall(
+	block: ToolCall,
+	model: Model<"anthropic-messages">,
+	isOAuthToken: boolean,
+	harnessToolNames: AnthropicHarnessToolNames | undefined,
+	declaredNames: ReadonlySet<string> | undefined,
+): { name: string; input: Record<string, unknown> } {
+	const facade = facadeToolCallReplay(block, declaredNames);
+	if (facade === undefined) {
+		return {
+			name: replayAnthropicToolName(block.name, block.wireName, model, isOAuthToken, harnessToolNames),
+			input: block.arguments ?? {},
+		};
+	}
+	return {
+		name: facade.native
+			? encodeAnthropicToolName(
+					facade.name,
+					isOAuthToken,
+					model.compat.escapeBuiltinToolNames,
+					false,
+					harnessToolNames,
+				)
+			: facade.name,
+		input: facade.arguments,
+	};
 }
 
 function decodeAnthropicToolName(
@@ -4106,6 +4140,7 @@ function buildParams(
 		dropAllThinking,
 		droppedThinkingBlocks,
 		harnessToolNames,
+		declaredNames: declaredToolNames(context.tools),
 	});
 	const controlState = getAnthropicControlState(providerSessionState, options?.sessionId, systemBlocks, wireMessages);
 	if (controlState) syncAnthropicControlState(controlState, wireMessages);
@@ -4327,9 +4362,11 @@ export function convertAnthropicMessages(
 		dropAllThinking?: boolean;
 		droppedThinkingBlocks?: ReadonlySet<string>;
 		harnessToolNames?: AnthropicHarnessToolNames;
+		declaredNames?: ReadonlySet<string>;
 	},
 ): AnthropicMessageParam[] {
 	const harnessToolNames = opts?.harnessToolNames;
+	const declaredNames = opts?.declaredNames;
 	// Indices of params emitted from `developer` messages. After the main pass,
 	// the ones whose placement satisfies Anthropic's mid-conversation rules are
 	// upgraded from the `user` role to the authoritative `system` role.
@@ -4476,11 +4513,12 @@ export function convertAnthropicMessages(
 						to: block.to,
 					});
 				} else if (block.type === "toolCall") {
+					const replay = replayAnthropicToolCall(block, model, isOAuthToken, harnessToolNames, declaredNames);
 					blocks.push({
 						type: "tool_use",
 						id: block.id,
-						name: replayAnthropicToolName(block.name, block.wireName, model, isOAuthToken, harnessToolNames),
-						input: toWellFormedDeep(block.arguments ?? {}),
+						name: replay.name,
+						input: toWellFormedDeep(replay.input),
 					});
 				}
 			}

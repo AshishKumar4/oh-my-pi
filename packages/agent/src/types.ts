@@ -796,14 +796,15 @@ export interface AgentTool<
 	persistAs?: string;
 	/**
 	 * Project validated wire-shaped arguments into the persisted identity's
-	 * shape for name-keyed event surfaces (`tool_execution_start`/`update`).
-	 * A tool that dispatches under one name while persisting under another
-	 * (see `persistAs`) maps wire args to target args here, so an event filed
-	 * under the omp name carries omp-shaped args. The persisted toolCall block
-	 * keeps the wire shape for faithful provider replay. A throw or a
-	 * non-record return falls back to the raw args.
+	 * shape. A tool that dispatches under one name while persisting under
+	 * another (see `persistAs`) maps wire args to target args here. The result
+	 * is recorded on the persisted toolCall as `nativeArguments` (so provider
+	 * replay can re-emit the omp identity once this tool is gone) and carried
+	 * by name-keyed event surfaces (`tool_execution_start`/`update`) filed under
+	 * the omp name. A throw or a non-record return records nothing and events
+	 * fall back to the raw args.
 	 */
-	toEventArgs?: (args: Record<string, unknown>) => unknown;
+	toNativeArgs?: (args: Record<string, unknown>) => unknown;
 	/** If true, tool can stage a pending action that requires explicit resolution via the resolve tool. */
 	deferrable?: boolean;
 	/** How an enabled tool is presented. See {@link ToolLoadMode}. Omitted is treated as `"essential"` for built-ins; custom-tool adapters normalize omission to `"discoverable"`. */

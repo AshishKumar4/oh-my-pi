@@ -1282,7 +1282,7 @@ describe("agentLoop with AgentMessage", () => {
 			label: "Hub",
 			description: "send",
 			parameters: facadeSchema,
-			toEventArgs: args => ({ op: "send", ...args }),
+			toNativeArgs: args => ({ op: "send", ...args }),
 			execute: (id, params, signal, onUpdate, ctx) =>
 				hub.execute(id, { op: "send", ...params }, signal, onUpdate, ctx),
 		};
@@ -1313,7 +1313,12 @@ describe("agentLoop with AgentMessage", () => {
 		]);
 		const assistant = messages[1] as AssistantMessage;
 		const call = assistant.content.find(block => block.type === "toolCall");
-		expect(call).toMatchObject({ name: "hub", wireName: "SendMessage", arguments: { to: "Main", message: "hi" } });
+		expect(call).toMatchObject({
+			name: "hub",
+			wireName: "SendMessage",
+			arguments: { to: "Main", message: "hi" },
+			nativeArguments: { op: "send", to: "Main", message: "hi" },
+		});
 	});
 
 	it("falls back to the raw args when a persistAs event projection throws", async () => {
@@ -1334,7 +1339,7 @@ describe("agentLoop with AgentMessage", () => {
 			label: "Hub",
 			description: "send",
 			parameters: facadeSchema,
-			toEventArgs: () => {
+			toNativeArgs: () => {
 				throw new Error("no native shape for this payload");
 			},
 			execute: (id, params, signal, onUpdate, ctx) =>
@@ -1365,6 +1370,10 @@ describe("agentLoop with AgentMessage", () => {
 			to: "Main",
 			message: "hi",
 		});
+		const assistant = messages[1] as AssistantMessage;
+		const call = assistant.content.find(block => block.type === "toolCall");
+		expect(call).toMatchObject({ name: "hub", wireName: "SendMessage", arguments: { to: "Main", message: "hi" } });
+		expect(call?.type === "toolCall" ? "nativeArguments" in call : undefined).toBe(false);
 		const result = messages.find((m): m is ToolResultMessage => m.role === "toolResult");
 		expect(result?.isError).toBeFalsy();
 	});

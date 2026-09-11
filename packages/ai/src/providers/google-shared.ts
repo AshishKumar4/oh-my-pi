@@ -39,7 +39,7 @@ import type {
 	ThinkingConfig,
 	ThinkingLevel,
 } from "./google-types";
-import { transformMessages } from "./transform-messages";
+import { declaredToolNames, facadeToolCallReplay, transformMessages } from "./transform-messages";
 import { NON_VISION_IMAGE_PLACEHOLDER } from "./vision-guard";
 
 export type {
@@ -165,6 +165,7 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 	};
 
 	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
+	const declaredNames = declaredToolNames(context.tools);
 
 	// Gemini < 3 image tool results go in a separate user turn, but parallel tool results must
 	// stay a single contiguous functionResponse turn ("number of function response parts is not
@@ -244,7 +245,8 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 						});
 					}
 				} else if (block.type === "toolCall") {
-					emittedToolCallNames.set(block.id, block.name);
+					const facade = facadeToolCallReplay(block, declaredNames);
+					emittedToolCallNames.set(block.id, facade?.name ?? block.name);
 					// Gemini 3 requires a thought signature on function calls it makes. The
 					// public API requires the bypass sentinel on every unsigned call. Cloud
 					// Code Assist requires it only when the first call itself is unsigned;
@@ -259,8 +261,8 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 
 					const part: Part = {
 						functionCall: {
-							name: block.name,
-							args: block.arguments ?? {},
+							name: facade?.name ?? block.name,
+							args: facade?.arguments ?? block.arguments ?? {},
 							...(model.compat.supportsFunctionPartId ? { id: block.id } : {}),
 						},
 					};

@@ -1,13 +1,20 @@
+import * as path from "node:path";
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentEvent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import { streamAnthropic } from "@oh-my-pi/pi-ai/providers/anthropic";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
-import { buildCodexNamespaceTools } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
+import {
+	buildCodexNamespaceTools,
+	buildTransformedCodexRequestBody,
+} from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
+import { streamOpenAICompletions } from "@oh-my-pi/pi-ai/providers/openai-completions";
+import { streamOpenAIResponses } from "@oh-my-pi/pi-ai/providers/openai-responses";
 import type { AssistantMessage, Context, FetchImpl, Message, Model, ToolResultMessage } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import type { HarnessProfile } from "@oh-my-pi/pi-catalog/compat/harness";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { harnessFacade } from "@oh-my-pi/pi-coding-agent/harness/facade";
@@ -22,9 +29,15 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import { EvalTool } from "@oh-my-pi/pi-coding-agent/tools/eval";
 import { HubTool } from "@oh-my-pi/pi-coding-agent/tools/hub";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
-import { isRecord } from "@oh-my-pi/pi-utils";
+import { isRecord, TempDir } from "@oh-my-pi/pi-utils";
 
 const CLAUDE_CODE_MODEL = getBundledModel<"anthropic-messages">("anthropic", "claude-opus-5");
+const NATIVE_ANTHROPIC_MODEL = getBundledModel<"anthropic-messages">("anthropic", "claude-sonnet-4-5");
+const NATIVE_RESPONSES_MODEL = getBundledModel<"openai-responses">("opencode-zen", "muse-spark-1.3-contributor-free");
+const NATIVE_COMPLETIONS_MODEL = getBundledModel<"openai-completions">(
+	"cloudflare-ai-gateway",
+	"workers-ai/@cf/zai-org/glm-5.3-flash",
+);
 const CODEX_MODEL = buildModel({
 	id: "gpt-6-astra",
 	name: "gpt-6-astra",
@@ -148,11 +161,15 @@ function anthropicTextTurnFetch(): FetchImpl {
 	return async () => new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
 }
 
-async function replayedAnthropicToolNames(context: Context): Promise<string[]> {
+async function replayedAnthropicToolCalls(
+	model: Model<"anthropic-messages">,
+	context: Context,
+	isOAuth: boolean,
+): Promise<Array<{ name: string; input: unknown }>> {
 	let payload: Record<string, unknown> | undefined;
-	const stream = streamAnthropic(CLAUDE_CODE_MODEL, context, {
-		apiKey: "sk-ant-oat-test",
-		isOAuth: true,
+	const stream = streamAnthropic(model, context, {
+		apiKey: isOAuth ? "sk-ant-oat-test" : "sk-ant-api-test",
+		isOAuth,
 		fetch: anthropicTextTurnFetch(),
 		onPayload: captured => {
 			if (isRecord(captured)) payload = captured;
@@ -164,9 +181,89 @@ async function replayedAnthropicToolNames(context: Context): Promise<string[]> {
 	const messages = Array.isArray(payload?.messages) ? payload.messages : [];
 	return messages.flatMap(message =>
 		(Array.isArray(message.content) ? message.content : []).flatMap((block: Record<string, unknown>) =>
-			block.type === "tool_use" && typeof block.name === "string" ? [block.name] : [],
+			block.type === "tool_use" && typeof block.name === "string" ? [{ name: block.name, input: block.input }] : [],
 		),
 	);
+}
+
+async function replayedAnthropicToolNames(context: Context): Promise<string[]> {
+	return (await replayedAnthropicToolCalls(CLAUDE_CODE_MODEL, context, true)).map(call => call.name);
+}
+
+function dataSse(events: readonly Record<string, unknown>[], done: boolean): FetchImpl {
+	const body = `${events.map(event => `data: ${JSON.stringify(event)}`).join("\n\n")}\n\n${done ? "data: [DONE]\n\n" : ""}`;
+	return async () => new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+}
+
+const RESPONSES_TEXT_SSE: readonly Record<string, unknown>[] = [
+	{ type: "response.output_text.delta", delta: "ok" },
+	{ type: "response.completed", response: { status: "completed" } },
+];
+
+const COMPLETIONS_TEXT_SSE: readonly Record<string, unknown>[] = [
+	{ id: "c1", choices: [{ index: 0, delta: { content: "ok" } }] },
+	{ id: "c1", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+];
+
+async function replayedResponsesToolCalls(
+	context: Context,
+): Promise<Array<{ name: string; arguments: unknown; namespace: unknown }>> {
+	let payload: Record<string, unknown> | undefined;
+	const stream = streamOpenAIResponses(NATIVE_RESPONSES_MODEL, context, {
+		apiKey: "sk-test",
+		fetch: dataSse(RESPONSES_TEXT_SSE, false),
+		onPayload: captured => {
+			if (isRecord(captured)) payload = captured;
+		},
+	});
+	for await (const _ of stream) {
+	}
+	await stream.result();
+	const input = Array.isArray(payload?.input) ? payload.input : [];
+	return input.flatMap((item: Record<string, unknown>) =>
+		item.type === "function_call" && typeof item.name === "string"
+			? [{ name: item.name, arguments: item.arguments, namespace: item.namespace }]
+			: [],
+	);
+}
+
+async function replayedCompletionsToolCalls(context: Context): Promise<Array<{ name: string; arguments: unknown }>> {
+	let payload: Record<string, unknown> | undefined;
+	const stream = streamOpenAICompletions(NATIVE_COMPLETIONS_MODEL, context, {
+		apiKey: "sk-test",
+		fetch: dataSse(COMPLETIONS_TEXT_SSE, true),
+		onPayload: captured => {
+			if (isRecord(captured)) payload = captured;
+		},
+	});
+	for await (const _ of stream) {
+	}
+	await stream.result();
+	const messages = Array.isArray(payload?.messages) ? payload.messages : [];
+	return messages.flatMap((message: Record<string, unknown>) =>
+		(Array.isArray(message.tool_calls) ? message.tool_calls : []).flatMap((call: Record<string, unknown>) =>
+			isRecord(call.function) && typeof call.function.name === "string"
+				? [{ name: call.function.name, arguments: call.function.arguments }]
+				: [],
+		),
+	);
+}
+
+/** Persist through a real session file and read it back, as a resumed session would. */
+async function reopenedFromDisk(messages: Message[]): Promise<Message[]> {
+	using tempDir = TempDir.createSync("@omp-harness-facades-");
+	const sessionDir = path.join(tempDir.path(), "sessions");
+	const manager = SessionManager.create(tempDir.path(), sessionDir);
+	for (const message of messages) manager.appendMessage(message);
+	await manager.close();
+	const file = manager.getSessionFile();
+	if (!file) throw new Error("session was not persisted");
+	const reopened = await SessionManager.open(file, sessionDir, undefined, { suppressBreadcrumb: true });
+	try {
+		return reopened.buildSessionContext().messages.filter((message): message is Message => message.role !== "custom");
+	} finally {
+		await reopened.close();
+	}
 }
 
 afterEach(async () => {
@@ -240,6 +337,84 @@ describe("claude-code SendMessage facade", () => {
 		});
 		expect(result.isError).toBe(true);
 		expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("notify_when_idle") });
+	});
+
+	it("replays the omp identity with native arguments once the profile is gone", async () => {
+		const registry = AgentRegistry.global();
+		registry.register({ id: PEER, displayName: PEER, kind: "sub", session: null, status: "running" });
+		const inbox = IrcBus.global().wait(PEER, { from: SENDER }, 0);
+		const hub = new HubTool(toolSession()) as unknown as AgentTool;
+		const facade = facadeFor("claude-code", "SendMessage", hub);
+		const vendorArgs = { to: PEER, message: "ping", summary: "ping" };
+		const nativeArgs = { op: "send", to: PEER, message: "ping" };
+
+		const { agent } = await runFacadeCall(CLAUDE_CODE_MODEL, [hub, facade], {
+			name: "SendMessage",
+			arguments: vendorArgs,
+		});
+		await inbox;
+		const messages = await reopenedFromDisk(agent.state.messages as Message[]);
+		const assistant = messages.find((message): message is AssistantMessage => message.role === "assistant");
+		expect(assistant?.content[0]).toMatchObject({
+			name: "hub",
+			wireName: "SendMessage",
+			arguments: vendorArgs,
+			nativeArguments: nativeArgs,
+		});
+
+		expect(await replayedAnthropicToolCalls(CLAUDE_CODE_MODEL, { messages, tools: [hub, facade] }, true)).toEqual([
+			{ name: "SendMessage", input: vendorArgs },
+		]);
+		expect(await replayedAnthropicToolCalls(NATIVE_ANTHROPIC_MODEL, { messages, tools: [hub] }, false)).toEqual([
+			{ name: "hub", input: nativeArgs },
+		]);
+		expect(await replayedResponsesToolCalls({ messages, tools: [hub] })).toEqual([
+			{ name: "hub", arguments: JSON.stringify(nativeArgs), namespace: undefined },
+		]);
+		expect(await replayedCompletionsToolCalls({ messages, tools: [hub] })).toEqual([
+			{ name: "hub", arguments: JSON.stringify(nativeArgs) },
+		]);
+	});
+
+	it("replays a session persisted before native arguments exactly as before", async () => {
+		const registry = AgentRegistry.global();
+		registry.register({ id: PEER, displayName: PEER, kind: "sub", session: null, status: "running" });
+		const inbox = IrcBus.global().wait(PEER, { from: SENDER }, 0);
+		const hub = new HubTool(toolSession()) as unknown as AgentTool;
+		const facade = facadeFor("claude-code", "SendMessage", hub);
+		const vendorArgs = { to: PEER, message: "ping", summary: "ping" };
+
+		const { agent } = await runFacadeCall(CLAUDE_CODE_MODEL, [hub, facade], {
+			name: "SendMessage",
+			arguments: vendorArgs,
+		});
+		await inbox;
+		const olderBuild = (agent.state.messages as Message[]).map(message =>
+			message.role === "assistant"
+				? {
+						...message,
+						content: message.content.map(block => {
+							if (block.type !== "toolCall") return block;
+							const { nativeArguments: _, ...persisted } = block;
+							return persisted;
+						}),
+					}
+				: message,
+		);
+		const messages = await reopenedFromDisk(olderBuild);
+		const assistant = messages.find((message): message is AssistantMessage => message.role === "assistant");
+		expect(assistant?.content[0]).toMatchObject({ name: "hub", wireName: "SendMessage", arguments: vendorArgs });
+		expect(assistant?.content[0]).not.toHaveProperty("nativeArguments");
+
+		expect(await replayedAnthropicToolCalls(CLAUDE_CODE_MODEL, { messages, tools: [hub, facade] }, true)).toEqual([
+			{ name: "SendMessage", input: vendorArgs },
+		]);
+		expect(await replayedAnthropicToolCalls(NATIVE_ANTHROPIC_MODEL, { messages, tools: [hub] }, false)).toEqual([
+			{ name: "hub", input: vendorArgs },
+		]);
+		expect(await replayedResponsesToolCalls({ messages, tools: [hub] })).toEqual([
+			{ name: "SendMessage", arguments: JSON.stringify(vendorArgs), namespace: undefined },
+		]);
 	});
 });
 
@@ -487,6 +662,60 @@ describe("codex send_message facade", () => {
 		expect(result.isError).toBeFalsy();
 		expect(result.content).toContainEqual({ type: "text", text: `Delivered to 1 peer(s):\n- ${PEER}: injected` });
 		expect(assistant.content[0]).toMatchObject({ name: "hub", wireName: "send_message" });
+	});
+
+	it("replays under its own name on codex and as hub with native arguments elsewhere", async () => {
+		const registry = AgentRegistry.global();
+		registry.register({ id: PEER, displayName: PEER, kind: "sub", session: null, status: "running" });
+		const inbox = IrcBus.global().wait(PEER, { from: SENDER }, 0);
+		const hub = new HubTool(toolSession()) as unknown as AgentTool;
+		const facade = facadeFor("codex", "send_message", hub);
+		const vendorArgs = { target: PEER, message: "ping from codex" };
+		const nativeArgs = { op: "send", to: PEER, message: "ping from codex" };
+
+		const { agent } = await runFacadeCall(CODEX_MODEL, [hub, facade], {
+			name: "send_message",
+			arguments: vendorArgs,
+		});
+		await inbox;
+		const messages = (agent.state.messages as Message[]).map((message): Message =>
+			message.role === "assistant"
+				? {
+						...message,
+						content: message.content.map(block =>
+							block.type === "toolCall" ? { ...block, namespace: "collaboration" } : block,
+						),
+					}
+				: message,
+		);
+		const assistant = messages.find((message): message is AssistantMessage => message.role === "assistant");
+		expect(assistant?.content[0]).toMatchObject({
+			name: "hub",
+			wireName: "send_message",
+			nativeArguments: nativeArgs,
+		});
+
+		const body = await buildTransformedCodexRequestBody(
+			CODEX_MODEL,
+			{ messages, tools: [hub, facade] },
+			{
+				reasoning: Effort.High,
+			},
+		);
+		const codexCalls = (Array.isArray(body.input) ? body.input : []).flatMap(item =>
+			isRecord(item) && item.type === "function_call"
+				? [{ name: item.name, arguments: item.arguments, namespace: item.namespace }]
+				: [],
+		);
+		expect(codexCalls).toEqual([
+			{ name: "send_message", arguments: JSON.stringify(vendorArgs), namespace: "collaboration" },
+		]);
+		expect(await replayedAnthropicToolCalls(NATIVE_ANTHROPIC_MODEL, { messages, tools: [hub] }, false)).toEqual([
+			{ name: "hub", input: nativeArgs },
+		]);
+		expect(await replayedResponsesToolCalls({ messages, tools: [hub] })).toEqual([
+			{ name: "hub", arguments: JSON.stringify(nativeArgs), namespace: undefined },
+		]);
 	});
 });
 

@@ -866,7 +866,20 @@ export interface ToolCall {
 	 */
 	customWireName?: string;
 	namespace?: string;
+	/**
+	 * Name the model called this tool by when it differs from `name`: a harness
+	 * facade dispatches under its vendor name and persists under the omp tool
+	 * it executed as. `arguments` keep the vendor shape that name was declared
+	 * with, so the call replays verbatim while the facade is still declared.
+	 */
 	wireName?: string;
+	/**
+	 * `arguments` projected into `name`'s own schema, recorded at dispatch when
+	 * `wireName` is set. Replay uses it once the facade is no longer declared,
+	 * so an omp name never carries a vendor payload; absent when the projection
+	 * failed or the call predates this field.
+	 */
+	nativeArguments?: Record<string, unknown>;
 	/** Provider-native metadata required to execute and faithfully replay this call. */
 	providerMetadata?: ToolCallProviderMetadata;
 }

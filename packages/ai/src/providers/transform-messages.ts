@@ -1,3 +1,4 @@
+import { isRecord } from "@oh-my-pi/pi-utils";
 import { renderDemotedThinking } from "../dialect/demotion";
 import type {
 	Api,
@@ -5,6 +6,7 @@ import type {
 	DeveloperMessage,
 	Message,
 	Model,
+	Tool,
 	ToolCall,
 	ToolResultMessage,
 	UserMessage,
@@ -502,6 +504,19 @@ export function redactSensitiveInObject(val: unknown): { result: unknown; change
 	return { result: val, changed: false };
 }
 
+/** Both persisted payloads carry the same call, so a credential in one is in the other. */
+function redactToolCallPayloads(block: ToolCall): ToolCall {
+	const args = redactSensitiveInObject(block.arguments);
+	const native = block.nativeArguments === undefined ? undefined : redactSensitiveInObject(block.nativeArguments);
+	if (!args.changed && !native?.changed) return block;
+	return {
+		...block,
+		arguments: isRecord(args.result) ? args.result : {},
+		...(native === undefined ? {} : { nativeArguments: isRecord(native.result) ? native.result : {} }),
+		thoughtSignature: undefined,
+	};
+}
+
 function redactSensitiveCredentialsInMessages(messages: Message[]): Message[] {
 	if (!credentialRedactionEnabled) return messages;
 	return messages.map((msg): Message => {
@@ -560,20 +575,10 @@ function redactSensitiveCredentialsInMessages(messages: Message[]): Message[] {
 						return { ...block, thinking: redacted, thinkingSignature: undefined };
 					}
 				} else if (block.type === "toolCall") {
-					if (block.arguments) {
-						const { result: redactedArgs, changed: argsChanged } = redactSensitiveInObject(block.arguments);
-						if (argsChanged) {
-							changed = true;
-							const castArgs =
-								redactedArgs && typeof redactedArgs === "object" && !Array.isArray(redactedArgs)
-									? (redactedArgs as Record<string, unknown>)
-									: undefined;
-							return {
-								...block,
-								arguments: castArgs,
-								thoughtSignature: undefined,
-							} as AssistantMessage["content"][number];
-						}
+					const redacted = redactToolCallPayloads(block);
+					if (redacted !== block) {
+						changed = true;
+						return redacted;
 					}
 				}
 				return block;
@@ -1258,4 +1263,47 @@ export function transformMessages<TApi extends Api>(
 	flushPendingAbortedToolCalls();
 
 	return result;
+}
+
+/** Every name the model can call in this request: each tool's own name plus its wire alias. */
+export function declaredToolNames(tools: readonly Tool[] | undefined): ReadonlySet<string> | undefined {
+	if (!tools || tools.length === 0) return undefined;
+	const names = new Set<string>();
+	for (const tool of tools) {
+		names.add(tool.name);
+		if (tool.customWireName !== undefined) names.add(tool.customWireName);
+	}
+	return names;
+}
+
+export interface FacadeToolCallReplay {
+	/** The omp pair (`name`/`nativeArguments`) rather than the vendor pair (`wireName`/`arguments`). */
+	native: boolean;
+	name: string;
+	arguments: Record<string, unknown>;
+}
+
+/**
+ * Which identity a harness-facade call replays under.
+ *
+ * A facade call persists two shapes of the same call: the vendor pair the
+ * model made (`wireName`/`arguments`) and the omp pair it executed as
+ * (`name`/`nativeArguments`). The vendor pair replays verbatim while a tool of
+ * that name is still declared; once the facade is gone (a fallback-chain
+ * switch to a model without the profile) the omp pair replays instead, so the
+ * transcript never pairs an omp name with a payload its schema rejects.
+ * Nothing is converted here — both shapes were recorded at dispatch.
+ *
+ * `undefined` for a call with a single identity: no facade was involved, or
+ * the block predates `nativeArguments` and carries no omp payload. The caller
+ * replays such a block exactly as it did before this field existed.
+ */
+export function facadeToolCallReplay(
+	block: ToolCall,
+	declaredNames: ReadonlySet<string> | undefined,
+): FacadeToolCallReplay | undefined {
+	if (block.wireName === undefined) return undefined;
+	if (declaredNames?.has(block.wireName)) return { native: false, name: block.wireName, arguments: block.arguments };
+	if (block.nativeArguments === undefined) return undefined;
+	return { native: true, name: block.name, arguments: block.nativeArguments };
 }

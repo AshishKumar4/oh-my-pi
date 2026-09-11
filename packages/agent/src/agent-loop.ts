@@ -2292,18 +2292,42 @@ function resolveToolForCall(
 	);
 }
 
+function nativeArgsForToolCall(
+	tool: Pick<AgentTool, "toNativeArgs">,
+	args: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+	try {
+		const projected = tool.toNativeArgs?.(args);
+		return isRecord(projected) ? projected : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 function eventArgsForToolCall(
-	tool: Pick<AgentTool, "persistAs" | "toEventArgs"> | undefined,
+	tool: Pick<AgentTool, "persistAs" | "toNativeArgs"> | undefined,
 	toolCallName: string,
 	args: Record<string, unknown>,
 ): Record<string, unknown> {
 	if (tool?.persistAs === undefined || toolCallName !== tool.persistAs) return args;
-	try {
-		const projected = tool.toEventArgs?.(args);
-		return isRecord(projected) ? projected : args;
-	} catch {
-		return args;
-	}
+	return nativeArgsForToolCall(tool, args) ?? args;
+}
+
+/**
+ * Persist the omp-shaped payload beside the wire-shaped one on a call made
+ * through a `persistAs` tool. Provider replay picks one pair by whether the
+ * dispatching tool is still declared; a call whose projection failed has no
+ * omp payload and replays as it did before this field existed.
+ */
+function recordNativeArgs(
+	toolCall: AgentToolCall,
+	tool: Pick<AgentTool, "persistAs" | "toNativeArgs"> | undefined,
+	args: Record<string, unknown>,
+): void {
+	if (tool?.persistAs === undefined || toolCall.name !== tool.persistAs) return;
+	const native = nativeArgsForToolCall(tool, args);
+	if (native === undefined) delete toolCall.nativeArguments;
+	else toolCall.nativeArguments = native;
 }
 
 /** Shortest suggestable segment; below this the match is noise (`id`, `to`). */
@@ -2433,6 +2457,7 @@ async function prepareToolCallDispatch(
 		const effectiveArgs = validate(argsForExecution);
 		if (effectiveArgs === undefined) continue;
 		entry.args = effectiveArgs;
+		recordNativeArgs(toolCall, tool, effectiveArgs);
 		if (!beforeToolCall || !tool) continue;
 		let beforeResult: BeforeToolCallResult | undefined;
 		try {
@@ -2460,6 +2485,7 @@ async function prepareToolCallDispatch(
 			// the call anywhere downstream.
 			toolCall.arguments = beforeResult.args;
 			entry.args = revised;
+			recordNativeArgs(toolCall, tool, revised);
 		}
 	}
 	return prepared;

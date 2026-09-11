@@ -437,3 +437,14 @@ export function anthropicReplayedToolNames(body: Record<string, unknown>): strin
 		}),
 	);
 }
+
+export function anthropicReplayedToolCalls(body: Record<string, unknown>): Array<{ name: string; input: unknown }> {
+	return (arrayField(body, "messages") ?? []).flatMap(message =>
+		(arrayField(message, "content") ?? []).flatMap(block => {
+			const name = stringField(block, "name");
+			return stringField(block, "type") === "tool_use" && name !== undefined
+				? [{ name, input: field(block, "input") }]
+				: [];
+		}),
+	);
+}

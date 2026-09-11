@@ -134,7 +134,7 @@ import {
 	promoteResponsesToolUseStopReason,
 	type SequentialCutoffSummaryState,
 } from "./openai-shared";
-import { redactSensitiveInObject, transformMessages } from "./transform-messages";
+import { declaredToolNames, redactSensitiveInObject, transformMessages } from "./transform-messages";
 
 export interface OpenAICodexResponsesOptions extends StreamOptions {
 	reasoning?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -4600,6 +4600,7 @@ function convertMessages(model: Model<"openai-codex-responses">, context: Contex
 	const customCallIds = new Set<string>();
 	const knownCallIds = new Set<string>();
 	const computerCallIds = new Set<string>();
+	const declaredNames = declaredToolNames(context.tools);
 
 	for (const msg of transformedMessages) {
 		if (msg.role === "user" || msg.role === "developer") {
@@ -4685,6 +4686,9 @@ function convertMessages(model: Model<"openai-codex-responses">, context: Contex
 				true,
 				undefined,
 				computerCallIds,
+				false,
+				false,
+				declaredNames,
 			);
 			const outputItems = suppressHiddenEmptyFallback
 				? sanitizeOpenAIResponsesAssistantFallbackItemsForReplay(convertedOutputItems)

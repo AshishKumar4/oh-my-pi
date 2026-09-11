@@ -7,6 +7,7 @@ import type {
 	Message,
 	Model,
 	Tool,
+	ToolCall,
 	ToolResultMessage,
 	UserMessage,
 } from "@oh-my-pi/pi-ai/types";
@@ -15,6 +16,7 @@ import { withEnv } from "./helpers";
 import {
 	anthropicDeclarations,
 	anthropicFraming,
+	anthropicReplayedToolCalls,
 	anthropicReplayedToolNames,
 	anthropicTurnFetch,
 	captureAnthropicTurn,
@@ -78,6 +80,47 @@ function priorToolCall(): Message[] {
 	return [USER, assistant, toolResult, { role: "user", content: "now read it", timestamp: 4 }];
 }
 
+const SEND_MESSAGE: Tool = {
+	name: "SendMessage",
+	description: "Send a message",
+	parameters: { type: "object", properties: { to: { type: "string" } } },
+};
+
+const WEB_FETCH: Tool = {
+	name: "WebFetch",
+	description: "Fetch a URL",
+	parameters: { type: "object", properties: { url: { type: "string" } } },
+};
+
+function facadeHistory(call: Omit<ToolCall, "type" | "id">): Message[] {
+	const assistant: AssistantMessage = {
+		role: "assistant",
+		content: [{ type: "toolCall", id: "toolu_facade", ...call }],
+		api: "anthropic-messages",
+		provider: "anthropic",
+		model: "claude-opus-5",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "toolUse",
+		timestamp: 2,
+	};
+	const toolResult: ToolResultMessage = {
+		role: "toolResult",
+		toolCallId: "toolu_facade",
+		toolName: call.name,
+		content: [{ type: "text", text: "delivered" }],
+		isError: false,
+		timestamp: 3,
+	};
+	return [USER, assistant, toolResult, { role: "user", content: "next", timestamp: 4 }];
+}
+
 function runTurn(
 	model: Model<"anthropic-messages">,
 	wireToolName: string,
@@ -124,54 +167,55 @@ describe("anthropic claude-code harness surface", () => {
 		expect(anthropicReplayedToolNames(payload)).toEqual(["Bash"]);
 	});
 
-	it("re-encodes a facade turn through the active map after a profile switch", async () => {
-		const history: Message[] = [
-			USER,
-			{
-				role: "assistant",
-				content: [
-					{
-						type: "toolCall",
-						id: "toolu_facade",
-						name: "hub",
-						wireName: "SendMessage",
-						arguments: { to: "Main", message: "hi" },
-					},
-				],
-				api: "anthropic-messages",
-				provider: "anthropic",
-				model: "claude-opus-5",
-				usage: {
-					input: 0,
-					output: 0,
-					cacheRead: 0,
-					cacheWrite: 0,
-					totalTokens: 0,
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-				},
-				stopReason: "toolUse",
-				timestamp: 2,
-			} satisfies AssistantMessage,
-			{
-				role: "toolResult",
-				toolCallId: "toolu_facade",
-				toolName: "hub",
-				content: [{ type: "text", text: "delivered" }],
-				isError: false,
-				timestamp: 3,
-			} satisfies ToolResultMessage,
-			{ role: "user", content: "next", timestamp: 4 } satisfies UserMessage,
-		];
-		const facade: Tool = {
-			name: "SendMessage",
-			description: "Send a message",
-			parameters: { type: "object", properties: { to: { type: "string" } } },
-		};
-		const profiled = await runTurn(harnessModel, "Bash", { messages: history, tools: [...TOOLS, facade] });
-		expect(anthropicReplayedToolNames(profiled.payload)).toEqual(["SendMessage"]);
-		const switched = await runTurn(plainModel, "Bash", { messages: history, tools: [...TOOLS, facade] });
-		expect(anthropicReplayedToolNames(switched.payload)).toEqual(["_hub"]);
+	it("replays the omp identity with native arguments once the facade is gone", async () => {
+		const history = facadeHistory({
+			name: "hub",
+			wireName: "SendMessage",
+			arguments: { to: "Main", message: "hi", summary: "hi" },
+			nativeArguments: { op: "send", to: "Main", message: "hi" },
+		});
+		const profiled = await runTurn(harnessModel, "Bash", { messages: history, tools: [...TOOLS, SEND_MESSAGE] });
+		expect(anthropicReplayedToolCalls(profiled.payload)).toEqual([
+			{ name: "SendMessage", input: { to: "Main", message: "hi", summary: "hi" } },
+		]);
+		const switched = await runTurn(plainModel, "Bash", { messages: history });
 		expect(declaredNames(anthropicDeclarations(switched.payload))).not.toContain("SendMessage");
+		expect(anthropicReplayedToolCalls(switched.payload)).toEqual([
+			{ name: "_hub", input: { op: "send", to: "Main", message: "hi" } },
+		]);
+	});
+
+	it("keeps a facade's own name over its target's active alias while the profile is active", async () => {
+		const history = facadeHistory({
+			name: "read",
+			wireName: "WebFetch",
+			arguments: { url: "https://example.com", prompt: "summarize" },
+			nativeArguments: { path: "https://example.com" },
+		});
+		const profiled = await runTurn(harnessModel, "Bash", { messages: history, tools: [...TOOLS, WEB_FETCH] });
+		expect(anthropicReplayedToolCalls(profiled.payload)).toEqual([
+			{ name: "WebFetch", input: { url: "https://example.com", prompt: "summarize" } },
+		]);
+		const switched = await runTurn(plainModel, "Bash", { messages: history });
+		expect(anthropicReplayedToolCalls(switched.payload)).toEqual([
+			{ name: "_read", input: { path: "https://example.com" } },
+		]);
+	});
+
+	it("replays history persisted without native arguments exactly as before", async () => {
+		const history = facadeHistory({
+			name: "hub",
+			wireName: "SendMessage",
+			arguments: { to: "Main", message: "hi" },
+		});
+		const profiled = await runTurn(harnessModel, "Bash", { messages: history, tools: [...TOOLS, SEND_MESSAGE] });
+		expect(anthropicReplayedToolCalls(profiled.payload)).toEqual([
+			{ name: "SendMessage", input: { to: "Main", message: "hi" } },
+		]);
+		const switched = await runTurn(plainModel, "Bash", { messages: history });
+		expect(anthropicReplayedToolCalls(switched.payload)).toEqual([
+			{ name: "_hub", input: { to: "Main", message: "hi" } },
+		]);
 	});
 
 	it("keeps the transport prefix when the tool list supplies no harness-native name", async () => {
