@@ -116,7 +116,13 @@ import {
 } from "./github-copilot-headers";
 import { getOpenAIPromptCacheKey } from "./openai-shared";
 import { applyInferenceHeaders } from "./inference-headers";
-import { declaredToolNames, facadeToolCallReplay, transformMessages } from "./transform-messages";
+import {
+	buildHarnessToolNames,
+	declaredToolNames,
+	facadeToolCallReplay,
+	type HarnessToolNames,
+	transformMessages,
+} from "./transform-messages";
 import { NON_VISION_IMAGE_PLACEHOLDER } from "./vision-guard";
 
 export type AnthropicHeaderOptions = {
@@ -903,37 +909,13 @@ function shouldUseUmansGatewayWebSearch(name: string, enabled: boolean): boolean
 	return enabled && name.toLowerCase() === UMANS_WEBSEARCH_TOOL_NAME;
 }
 
-type AnthropicHarnessToolNames = {
-	toWire: ReadonlyMap<string, string>;
-	fromWire: ReadonlyMap<string, string>;
-};
-
-function buildAnthropicHarnessToolNames(
-	model: Model<"anthropic-messages">,
-	tools: Tool[] | undefined,
-): AnthropicHarnessToolNames | undefined {
-	if (resolveHarnessProfile(model) !== "claude-code") return undefined;
-	const toWire = new Map<string, string>();
-	const fromWire = new Map<string, string>();
-	for (const tool of tools ?? []) {
-		const wireName = tool.customWireName;
-		if (wireName === undefined || wireName === tool.name) continue;
-		toWire.set(tool.name, wireName);
-		fromWire.set(wireName, tool.name);
-	}
-	if (toWire.size === 0) return undefined;
-	return { toWire, fromWire };
-}
-
 function encodeAnthropicToolName(
 	name: string,
 	isOAuthToken: boolean,
 	escapeBuiltinToolNames: boolean,
-	useUmansGatewayWebSearch = false,
-	harnessToolNames?: AnthropicHarnessToolNames,
+	toolNames: HarnessToolNames | undefined,
 ): string {
-	if (shouldUseUmansGatewayWebSearch(name, useUmansGatewayWebSearch)) return name;
-	if (harnessToolNames) return harnessToolNames.toWire.get(name) ?? name;
+	if (toolNames) return toolNames.toWire.get(name) ?? name;
 	if (escapeBuiltinToolNames) return `${claudeToolPrefix}${name}`;
 	return isOAuthToken ? applyClaudeToolPrefix(name) : name;
 }
@@ -949,37 +931,31 @@ function replayAnthropicToolName(
 	wireName: string | undefined,
 	model: Model<"anthropic-messages">,
 	isOAuthToken: boolean,
-	harnessToolNames: AnthropicHarnessToolNames | undefined,
+	toolNames: HarnessToolNames | undefined,
 ): string {
-	const activeWireName = harnessToolNames?.toWire.get(name);
+	const activeWireName = toolNames?.toWire.get(name);
 	if (activeWireName !== undefined) return activeWireName;
 	if (wireName !== undefined && resolveHarnessProfile(model) === "claude-code") return wireName;
-	return encodeAnthropicToolName(name, isOAuthToken, model.compat.escapeBuiltinToolNames, false, harnessToolNames);
+	return encodeAnthropicToolName(name, isOAuthToken, model.compat.escapeBuiltinToolNames, toolNames);
 }
 
 function replayAnthropicToolCall(
 	block: ToolCall,
 	model: Model<"anthropic-messages">,
 	isOAuthToken: boolean,
-	harnessToolNames: AnthropicHarnessToolNames | undefined,
+	toolNames: HarnessToolNames | undefined,
 	declaredNames: ReadonlySet<string> | undefined,
 ): { name: string; input: Record<string, unknown> } {
 	const facade = facadeToolCallReplay(block, declaredNames);
 	if (facade === undefined) {
 		return {
-			name: replayAnthropicToolName(block.name, block.wireName, model, isOAuthToken, harnessToolNames),
+			name: replayAnthropicToolName(block.name, block.wireName, model, isOAuthToken, toolNames),
 			input: block.arguments ?? {},
 		};
 	}
 	return {
 		name: facade.native
-			? encodeAnthropicToolName(
-					facade.name,
-					isOAuthToken,
-					model.compat.escapeBuiltinToolNames,
-					false,
-					harnessToolNames,
-				)
+			? encodeAnthropicToolName(facade.name, isOAuthToken, model.compat.escapeBuiltinToolNames, toolNames)
 			: facade.name,
 		input: facade.arguments,
 	};
@@ -989,9 +965,9 @@ function decodeAnthropicToolName(
 	name: string,
 	isOAuthToken: boolean,
 	escapeBuiltinToolNames: boolean,
-	harnessToolNames?: AnthropicHarnessToolNames,
+	toolNames: HarnessToolNames | undefined,
 ): string {
-	if (harnessToolNames) return harnessToolNames.fromWire.get(name) ?? name;
+	if (toolNames) return toolNames.fromWire.get(name) ?? name;
 	if (isOAuthToken || escapeBuiltinToolNames) return stripClaudeToolPrefix(name);
 	return name;
 }
@@ -2270,7 +2246,7 @@ const streamAnthropicOnce = (
 				isOAuthToken = created.isOAuthToken;
 			}
 			const preparedContext = await prepareAnthropicManyImageContext(context, model.input.includes("image"));
-			const harnessToolNames = buildAnthropicHarnessToolNames(model, preparedContext.tools);
+			const harnessToolNames = buildHarnessToolNames(model, "claude-code", preparedContext.tools);
 			const prepareParams = async (): Promise<MessageCreateParamsStreaming> => {
 				let nextParams = buildParams(model, preparedContext, isOAuthToken, options, {
 					disableStrictTools,
@@ -3984,7 +3960,7 @@ type AnthropicParamBuildOptions = {
 	dropAllThinking: boolean;
 	droppedThinkingBlocks?: ReadonlySet<string>;
 	providerSessionState?: AnthropicProviderSessionState;
-	harnessToolNames?: AnthropicHarnessToolNames;
+	harnessToolNames?: HarnessToolNames;
 	/** Sanitized server-side fallback entries; defaults to `options?.fallbacks` when omitted. */
 	fallbacks?: AnthropicOptions["fallbacks"];
 };
@@ -4030,17 +4006,13 @@ function buildParams(
 	});
 
 	// Pre-compute tools.
+	const declaredToolName = (name: string): string =>
+		shouldUseUmansGatewayWebSearch(name, useUmansGatewayWebSearch)
+			? name
+			: encodeAnthropicToolName(name, isOAuthToken, model.compat.escapeBuiltinToolNames, harnessToolNames);
 	let tools: AnthropicWireTool[] | undefined;
 	if (context.tools) {
-		tools = convertTools(
-			context.tools,
-			isOAuthToken,
-			disableStrictTools,
-			supportsEagerToolInputStreaming,
-			model.compat.escapeBuiltinToolNames,
-			useUmansGatewayWebSearch,
-			harnessToolNames,
-		);
+		tools = convertTools(context.tools, declaredToolName, disableStrictTools, supportsEagerToolInputStreaming);
 	} else if (isOAuthToken) {
 		tools = [];
 	}
@@ -4225,13 +4197,7 @@ function buildParams(
 		} else if (options.toolChoice.name) {
 			params.tool_choice = {
 				...options.toolChoice,
-				name: encodeAnthropicToolName(
-					options.toolChoice.name,
-					isOAuthToken,
-					model.compat.escapeBuiltinToolNames,
-					useUmansGatewayWebSearch,
-					harnessToolNames,
-				),
+				name: declaredToolName(options.toolChoice.name),
 			};
 		}
 		// Claude Fable/Mythos 5 reject forced tool use outright ("tool_choice forces
@@ -4361,7 +4327,7 @@ export function convertAnthropicMessages(
 		serverSideFallbackEnabled?: boolean;
 		dropAllThinking?: boolean;
 		droppedThinkingBlocks?: ReadonlySet<string>;
-		harnessToolNames?: AnthropicHarnessToolNames;
+		harnessToolNames?: HarnessToolNames;
 		declaredNames?: ReadonlySet<string>;
 	},
 ): AnthropicMessageParam[] {
@@ -4422,7 +4388,6 @@ export function convertAnthropicMessages(
 								change.name,
 								isOAuthToken,
 								model.compat.escapeBuiltinToolNames,
-								false,
 								harnessToolNames,
 							),
 						},
@@ -5162,12 +5127,9 @@ function buildAnthropicToolSchemaPlans(tools: Tool[], disableStrictTools = false
 
 function convertTools(
 	tools: Tool[],
-	isOAuthToken: boolean,
+	declaredToolName: (name: string) => string,
 	disableStrictTools = false,
 	supportsEagerToolInputStreaming = true,
-	escapeBuiltinToolNames = false,
-	useUmansGatewayWebSearch = false,
-	harnessToolNames?: AnthropicHarnessToolNames,
 ): AnthropicWireTool[] {
 	if (!tools) return [];
 	const schemaPlans = buildAnthropicToolSchemaPlans(tools, disableStrictTools);
@@ -5175,13 +5137,7 @@ function convertTools(
 	return tools.map((tool, index) => {
 		const plan = schemaPlans[index];
 		const baseTool = {
-			name: encodeAnthropicToolName(
-				tool.name,
-				isOAuthToken,
-				escapeBuiltinToolNames,
-				useUmansGatewayWebSearch,
-				harnessToolNames,
-			),
+			name: declaredToolName(tool.name),
 			description: tool.description || "",
 			input_schema: plan.inputSchema,
 		};

@@ -1,3 +1,4 @@
+import { type HarnessProfile, resolveHarnessProfile } from "@oh-my-pi/pi-catalog/compat/harness";
 import { isRecord } from "@oh-my-pi/pi-utils";
 import { renderDemotedThinking } from "../dialect/demotion";
 import type {
@@ -1274,6 +1275,34 @@ export function declaredToolNames(tools: readonly Tool[] | undefined): ReadonlyS
 		if (tool.customWireName !== undefined) names.add(tool.customWireName);
 	}
 	return names;
+}
+
+/** Omp name <-> vendor wire name for every tool a harness profile renames on this request. */
+export interface HarnessToolNames {
+	readonly toWire: ReadonlyMap<string, string>;
+	readonly fromWire: ReadonlyMap<string, string>;
+}
+
+/**
+ * The renames `profile` applies to this request's tools, or `undefined` when
+ * the model runs a different profile or no tool is renamed — callers treat
+ * absence as "vendor naming rules apply" rather than consulting an empty map.
+ */
+export function buildHarnessToolNames(
+	model: Model,
+	profile: HarnessProfile,
+	tools: readonly Tool[] | undefined,
+): HarnessToolNames | undefined {
+	if (resolveHarnessProfile(model) !== profile) return undefined;
+	const toWire = new Map<string, string>();
+	const fromWire = new Map<string, string>();
+	for (const tool of tools ?? []) {
+		const wireName = tool.customWireName;
+		if (wireName === undefined || wireName === tool.name) continue;
+		toWire.set(tool.name, wireName);
+		fromWire.set(wireName, tool.name);
+	}
+	return toWire.size > 0 ? { toWire, fromWire } : undefined;
 }
 
 export interface FacadeToolCallReplay {

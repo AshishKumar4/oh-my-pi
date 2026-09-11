@@ -134,7 +134,13 @@ import {
 	promoteResponsesToolUseStopReason,
 	type SequentialCutoffSummaryState,
 } from "./openai-shared";
-import { declaredToolNames, redactSensitiveInObject, transformMessages } from "./transform-messages";
+import {
+	buildHarnessToolNames,
+	declaredToolNames,
+	type HarnessToolNames,
+	redactSensitiveInObject,
+	transformMessages,
+} from "./transform-messages";
 
 export interface OpenAICodexResponsesOptions extends StreamOptions {
 	reasoning?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -1980,33 +1986,19 @@ function isJsonWhitespaceOnly(value: string): boolean {
 	return true;
 }
 
-export function buildCodexHarnessToolNames(
-	model: Model<"openai-codex-responses">,
-	tools: Tool[] | undefined,
-): ReadonlyMap<string, string> | undefined {
-	if (resolveHarnessProfile(model) !== "codex") return undefined;
-	const fromWire = new Map<string, string>();
-	for (const tool of tools ?? []) {
-		const wireName = tool.customWireName;
-		if (wireName === undefined || wireName === tool.name) continue;
-		fromWire.set(wireName, tool.name);
-	}
-	return fromWire.size > 0 ? fromWire : undefined;
-}
-
 export function resolveCodexNamespacedToolName(
 	name: string,
 	namespace: string | undefined,
-	fromWire?: ReadonlyMap<string, string>,
+	toolNames?: HarnessToolNames,
 ): string {
 	const prefix = namespace ? `${namespace}__` : undefined;
 	const declared = prefix && name.startsWith(prefix) ? name.slice(prefix.length) : name;
-	return fromWire?.get(declared) ?? declared;
+	return toolNames?.fromWire.get(declared) ?? declared;
 }
 
 function createOutputBlockForItem(
 	item: CodexEventItem,
-	fromWire: ReadonlyMap<string, string> | undefined,
+	toolNames: HarnessToolNames | undefined,
 ): CodexOutputBlock | null {
 	if (item.type === "reasoning") {
 		return { type: "thinking", thinking: "" };
@@ -2019,7 +2011,7 @@ function createOutputBlockForItem(
 		return {
 			type: "toolCall",
 			id: encodeResponsesToolCallId(item.call_id, item.id),
-			name: resolveCodexNamespacedToolName(item.name, item.namespace, fromWire),
+			name: resolveCodexNamespacedToolName(item.name, item.namespace, toolNames),
 			arguments: {},
 			...(item.namespace ? { namespace: item.namespace } : {}),
 			[kStreamingPartialJson]: item.arguments || "",
@@ -2040,7 +2032,7 @@ function createOutputBlockForItem(
 		return {
 			type: "toolCall",
 			id: encodeResponsesToolCallId(item.call_id, item.id),
-			name: fromWire?.get(wireName) ?? wireName,
+			name: toolNames?.fromWire.get(wireName) ?? wireName,
 			arguments: { input: item.input ?? "" },
 			customWireName: wireName,
 			...(item.namespace ? { namespace: item.namespace } : {}),
@@ -2144,7 +2136,7 @@ class CodexStreamProcessor {
 	requestSetup: CodexRequestSetup;
 	requestContext: CodexRequestContext;
 	startTime: number;
-	harnessToolNames: ReadonlyMap<string, string> | undefined;
+	harnessToolNames: HarnessToolNames | undefined;
 	firstTokenTime?: number;
 
 	constructor(init: {
@@ -2156,7 +2148,7 @@ class CodexStreamProcessor {
 		requestSetup: CodexRequestSetup;
 		requestContext: CodexRequestContext;
 		startTime: number;
-		harnessToolNames: ReadonlyMap<string, string> | undefined;
+		harnessToolNames: HarnessToolNames | undefined;
 	}) {
 		this.runtime = init.runtime;
 		this.model = init.model;
@@ -2546,7 +2538,7 @@ class CodexStreamProcessor {
 			const toolCall: ToolCall = {
 				type: "toolCall",
 				id: encodeResponsesToolCallId(item.call_id, item.id),
-				name: this.harnessToolNames?.get(wireName) ?? wireName,
+				name: this.harnessToolNames?.fromWire.get(wireName) ?? wireName,
 				arguments: { input: rawInput },
 				customWireName: wireName,
 				...(item.namespace ? { namespace: item.namespace } : {}),
@@ -3072,7 +3064,7 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 				requestSetup,
 				requestContext,
 				startTime,
-				harnessToolNames: buildCodexHarnessToolNames(model, context.tools),
+				harnessToolNames: buildHarnessToolNames(model, "codex", context.tools),
 			});
 
 			const completion = await processingContext.process();
@@ -4769,7 +4761,7 @@ function convertCodexToolPayload(
 	tool: Tool,
 	model: Model<"openai-codex-responses">,
 	allowFreeform: boolean,
-	harnessNaming: boolean,
+	toolNames: HarnessToolNames | undefined,
 ): CodexToolPayload {
 	if (tool.native?.type === "computer" && model.supportsComputerUse === true) {
 		return { type: "computer" };
@@ -4791,7 +4783,7 @@ function convertCodexToolPayload(
 	const { schema: parameters, strict: effectiveStrict } = adaptSchemaForStrict(baseParameters, strict);
 	return {
 		type: "function",
-		name: harnessNaming && !tool.customFormat ? (tool.customWireName ?? tool.name) : tool.name,
+		name: tool.customFormat ? tool.name : (toolNames?.toWire.get(tool.name) ?? tool.name),
 		description: tool.description || "",
 		parameters,
 		...(effectiveStrict ? { strict: true } : !NO_STRICT && tool.strict === false ? { strict: false } : {}),
@@ -4804,8 +4796,8 @@ export function convertOpenAICodexResponsesTools(
 	model: Model<"openai-codex-responses">,
 ): CodexToolPayload[] {
 	const allowFreeform = model.applyPatchToolType === "freeform";
-	const harnessNaming = resolveHarnessProfile(model) === "codex";
-	return tools.map(tool => convertCodexToolPayload(tool, model, allowFreeform, harnessNaming));
+	const toolNames = buildHarnessToolNames(model, "codex", tools);
+	return tools.map(tool => convertCodexToolPayload(tool, model, allowFreeform, toolNames));
 }
 
 type CodexAdditionalTool = NamespaceTool | CodexToolPayload;
@@ -4815,8 +4807,9 @@ const CODEX_DEFAULT_TOOL_NAMESPACE = "functions";
 export function buildCodexNamespaceTools(tools: Tool[], model: Model<"openai-codex-responses">): CodexAdditionalTool[] {
 	const groups = new Map<string, NamespaceTool>();
 	const surface: CodexAdditionalTool[] = [];
+	const toolNames = buildHarnessToolNames(model, "codex", tools);
 	for (const tool of tools) {
-		const payload = convertCodexToolPayload(tool, model, true, true);
+		const payload = convertCodexToolPayload(tool, model, true, toolNames);
 		if (payload.type === "computer") {
 			surface.push(payload);
 			continue;
