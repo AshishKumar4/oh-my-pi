@@ -124,6 +124,56 @@ describe("anthropic claude-code harness surface", () => {
 		expect(anthropicReplayedToolNames(payload)).toEqual(["Bash"]);
 	});
 
+	it("re-encodes a facade turn through the active map after a profile switch", async () => {
+		const history: Message[] = [
+			USER,
+			{
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: "toolu_facade",
+						name: "hub",
+						wireName: "SendMessage",
+						arguments: { to: "Main", message: "hi" },
+					},
+				],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-opus-5",
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "toolUse",
+				timestamp: 2,
+			} satisfies AssistantMessage,
+			{
+				role: "toolResult",
+				toolCallId: "toolu_facade",
+				toolName: "hub",
+				content: [{ type: "text", text: "delivered" }],
+				isError: false,
+				timestamp: 3,
+			} satisfies ToolResultMessage,
+			{ role: "user", content: "next", timestamp: 4 } satisfies UserMessage,
+		];
+		const facade: Tool = {
+			name: "SendMessage",
+			description: "Send a message",
+			parameters: { type: "object", properties: { to: { type: "string" } } },
+		};
+		const profiled = await runTurn(harnessModel, "Bash", { messages: history, tools: [...TOOLS, facade] });
+		expect(anthropicReplayedToolNames(profiled.payload)).toEqual(["SendMessage"]);
+		const switched = await runTurn(plainModel, "Bash", { messages: history, tools: [...TOOLS, facade] });
+		expect(anthropicReplayedToolNames(switched.payload)).toEqual(["_hub"]);
+		expect(declaredNames(anthropicDeclarations(switched.payload))).not.toContain("SendMessage");
+	});
+
 	it("keeps the transport prefix when the tool list supplies no harness-native name", async () => {
 		const { payload, result } = await runTurn(harnessModel, "_bash", { tools: UNALIASED_TOOLS });
 

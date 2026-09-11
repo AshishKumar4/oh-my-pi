@@ -1739,16 +1739,11 @@ export function convertResponsesInputContent(
  * Built once per request; `apply_patch` → `edit` is the OMP default.
  */
 function buildCustomToolWireNameMap(tools: readonly Tool[] | undefined): ReadonlyMap<string, string> | undefined {
-	if (!tools?.length) return undefined;
-	const map = new Map<string, string>();
-	for (const tool of tools) {
+	const map = new Map<string, string>([["apply_patch", "edit"]]);
+	for (const tool of tools ?? []) {
 		if (tool.customWireName) map.set(tool.customWireName, tool.name);
 	}
 	return map.size > 0 ? map : undefined;
-}
-
-function resolveReplayCustomToolName(wireName: string, wireNameMap: ReadonlyMap<string, string> | undefined): string {
-	return wireNameMap?.get(wireName) ?? (wireName === "apply_patch" ? "edit" : wireName);
 }
 
 /**
@@ -1773,7 +1768,7 @@ function adaptResponsesReplayItemsForModel(
 				type: "function_call",
 				...(item.id ? { id: item.id } : {}),
 				call_id: item.call_id,
-				name: resolveReplayCustomToolName(item.name, wireNameMap),
+				name: wireNameMap?.get(item.name) ?? item.name,
 				arguments: JSON.stringify({ input: item.input }),
 				...(item.namespace ? { namespace: item.namespace } : {}),
 			});
@@ -2271,7 +2266,7 @@ export function convertResponsesAssistantMessage<TApi extends Api>(
 		}
 		const functionName =
 			block.customWireName && !supportsCustomToolCalls
-				? resolveReplayCustomToolName(block.customWireName, customToolWireNameMap)
+				? (customToolWireNameMap?.get(block.customWireName) ?? block.customWireName)
 				: (block.wireName ?? block.name);
 		outputItems.push({
 			type: "function_call",

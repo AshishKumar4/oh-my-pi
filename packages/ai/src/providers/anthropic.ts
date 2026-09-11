@@ -938,6 +938,19 @@ function encodeAnthropicToolName(
 	return isOAuthToken ? applyClaudeToolPrefix(name) : name;
 }
 
+function replayAnthropicToolName(
+	name: string,
+	wireName: string | undefined,
+	model: Model<"anthropic-messages">,
+	isOAuthToken: boolean,
+	harnessToolNames: AnthropicHarnessToolNames | undefined,
+): string {
+	const activeWireName = harnessToolNames?.toWire.get(name);
+	if (activeWireName !== undefined) return activeWireName;
+	if (wireName !== undefined && resolveHarnessProfile(model) === "claude-code") return wireName;
+	return encodeAnthropicToolName(name, isOAuthToken, model.compat.escapeBuiltinToolNames, false, harnessToolNames);
+}
+
 function decodeAnthropicToolName(
 	name: string,
 	isOAuthToken: boolean,
@@ -4466,20 +4479,7 @@ export function convertAnthropicMessages(
 					blocks.push({
 						type: "tool_use",
 						id: block.id,
-						name:
-							block.wireName ??
-							encodeAnthropicToolName(
-								block.name,
-								isOAuthToken,
-								model.compat.escapeBuiltinToolNames,
-								false,
-								harnessToolNames,
-							),
-						// Always sanitize: the model itself can emit lone-surrogate escapes
-						// in tool-argument JSON (streamed out fine, rejected with a 400 on
-						// replay by Anthropic's strict UTF-8 validation). toWellFormedDeep
-						// is identity-preserving, so well-formed arguments stay
-						// byte-identical and prompt-cache prefixes are unaffected.
+						name: replayAnthropicToolName(block.name, block.wireName, model, isOAuthToken, harnessToolNames),
 						input: toWellFormedDeep(block.arguments ?? {}),
 					});
 				}
