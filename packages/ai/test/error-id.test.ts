@@ -87,6 +87,32 @@ describe("error-id classification", () => {
 		expect(AIError.retriable(id)).toBe(false);
 	});
 
+	it("classifies an Anthropic OAuth organization denial as account-scoped so rotation reaches another credential", () => {
+		const denial = message({
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-fable-5-1",
+			errorStatus: 403,
+			errorMessage:
+				'403 {"type":"error","error":{"type":"permission_error","message":"OAuth authentication is currently not allowed for this organization.","details":{"error_code":"oauth_not_allowed_for_organization"}},"request_id":"req_011Cex6VyetemYpe8MH4B3bz"}',
+		});
+		const denialId = AIError.classifyMessage(denial);
+		expect(AIError.is(denialId, AIError.Flag.AccountPolicy)).toBe(true);
+		expect(AIError.retriable(denialId)).toBe(false);
+		expect(AIError.isAccountPolicyError(denial)).toBe(true);
+
+		// A 403 that is not account-scoped must keep falling through to the
+		// generic auth path: blocking the credential would strand it.
+		const unrelated = message({
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-fable-5-1",
+			errorStatus: 403,
+			errorMessage: '403 {"type":"error","error":{"type":"permission_error","message":"Forbidden."}}',
+		});
+		expect(AIError.is(AIError.classifyMessage(unrelated), AIError.Flag.AccountPolicy)).toBe(false);
+	});
+
 	it("classifies only the matching Codex ChatGPT-account model entitlement denial as account policy", () => {
 		const errorMessage =
 			"The 'gpt-daybreak-blue-latest' model is not supported when using Codex with a ChatGPT account. (code=invalid_request_error)";
