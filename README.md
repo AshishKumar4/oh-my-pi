@@ -40,14 +40,16 @@ as it does upstream.
 ## Install
 
 ```sh
-git clone https://github.com/AshishKumar4/oh-my-tau.git
-cd oh-my-tau
+git clone https://github.com/AshishKumar4/oh-my-pi.git
+cd oh-my-pi
 ./scripts/install-harness.sh
 ```
 
+The repository is still named `oh-my-pi` while the rename to `oh-my-tau` is pending; use the URL above until it moves.
+
 The script builds the binary, installs it beside any existing `omp` (backing that one up first), and records the
-vendor prompts. It needs `bun`, `cargo` and `git`. It records a Claude Code capture if `claude` is on your PATH, and
-a Codex capture if `codex` is.
+vendor prompts. It needs `bun`, `cargo`, `git` and `python3`. It records a Claude Code capture if `claude` is on
+your PATH, and a Codex capture if `codex` is.
 
 Split the phases with `--build-only` or `--record-only`. Re-run it after upgrading Claude Code or Codex: captures are
 keyed by client version, and an older one keeps serving until you refresh it.
