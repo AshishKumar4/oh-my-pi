@@ -191,9 +191,18 @@ async function writeCapture(profile: HarnessProfile, file: string, capture: Harn
 		const recorded: unknown = await Bun.file(file)
 			.json()
 			.catch(() => undefined);
-		if (projectHarnessCapture(profile, recorded).ok) return false;
-		await fs.rename(temp, file);
-		return true;
+		const existing = projectHarnessCapture(profile, recorded);
+		if (!existing.ok) {
+			await fs.rename(temp, file);
+			return true;
+		}
+		if (!projectHarnessCapture(profile, capture).ok) return false;
+		const recordedAt = Date.parse(capture.capturedAt ?? "");
+		if (!Number.isNaN(recordedAt) && recordedAt > existing.capturedAt) {
+			await fs.rename(temp, file);
+			return true;
+		}
+		return false;
 	} finally {
 		await fs.rm(temp, { force: true });
 	}
@@ -239,7 +248,7 @@ export async function recordHarnessRequest(request: AuthGatewayHarnessRequest): 
 		return;
 	}
 	if (!written) {
-		logger.info("Harness recorder: this client identity is already recorded; keeping the first capture", {
+		logger.info("Harness recorder: this client identity already has a capture at least this new; keeping it", {
 			...identity,
 			file,
 		});

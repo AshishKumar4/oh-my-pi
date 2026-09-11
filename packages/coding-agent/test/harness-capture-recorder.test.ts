@@ -17,7 +17,11 @@ import {
 	type AuthGatewayCommandArgs,
 	runAuthGatewayCommand,
 } from "@oh-my-pi/pi-coding-agent/cli/auth-gateway-cli";
-import { loadHarnessPrompt, resetHarnessPromptCache } from "@oh-my-pi/pi-coding-agent/harness/capture";
+import {
+	HARNESS_CAPTURE_SCHEMA,
+	loadHarnessPrompt,
+	resetHarnessPromptCache,
+} from "@oh-my-pi/pi-coding-agent/harness/capture";
 import { recordHarnessRequest } from "@oh-my-pi/pi-coding-agent/harness/record";
 import * as brokerConfig from "@oh-my-pi/pi-coding-agent/session/auth-broker-config";
 import { withHarnessCacheDir } from "./helpers/harness";
@@ -213,6 +217,26 @@ describe("harness capture recorder", () => {
 		return await Bun.file(path.join(dirs.cache, profile, file)).json();
 	}
 
+	async function seedCapture(file: string, capturedAt: string): Promise<void> {
+		const dir = path.join(dirs.cache, "claude-code");
+		await fs.mkdir(dir, { recursive: true });
+		await fs.writeFile(
+			path.join(dir, file),
+			JSON.stringify({
+				schema: HARNESS_CAPTURE_SCHEMA,
+				profile: "claude-code",
+				clientVersion: CLIENT_VERSION,
+				entrypoint: claudeCodeEntrypoint,
+				capturedAt,
+				instructions: [
+					`${claudeCodeBillingHeaderPrefix} cc_version=${CLIENT_VERSION}; cc_entrypoint=${claudeCodeEntrypoint};`,
+					claudeCodeSystemInstruction,
+					HARNESS_PROMPT_BLOCK,
+				],
+				tools: ["Bash", "Read"],
+			}),
+		);
+	}
 	function servedPrompt(profile: HarnessProfile) {
 		resetHarnessPromptCache();
 		return loadHarnessPrompt(profile);
@@ -366,11 +390,11 @@ describe("harness capture recorder", () => {
 		expect(served?.text).not.toContain("vault://prod");
 	});
 
-	it("keeps the first capture a client identity produced", async () => {
+	it("refreshes the capture when the same client identity re-records with a newer timestamp", async () => {
+		await seedCapture(`${CLIENT_VERSION}-${claudeCodeEntrypoint}.json`, "2020-01-01T00:00:00.000Z");
 		const gateway = await bootGateway({ record: true });
-		const first = claudeCodeBody(claudeCodeEntrypoint, false);
 		const delegated = {
-			...first,
+			...claudeCodeBody(claudeCodeEntrypoint, false),
 			system: [
 				{
 					type: "text",
@@ -381,12 +405,43 @@ describe("harness capture recorder", () => {
 			],
 		};
 
-		await post(gateway, "/v1/messages", first, ANTHROPIC_HEADERS);
 		const second = await post(gateway, "/v1/messages", delegated, ANTHROPIC_HEADERS);
 
 		expect(await profileFiles("claude-code")).toEqual([`${CLIENT_VERSION}-${claudeCodeEntrypoint}.json`]);
-		expect((await servedPrompt("claude-code"))?.text).toBe(HARNESS_PROMPT_BLOCK);
+		expect((await servedPrompt("claude-code"))?.text).toBe(SUBAGENT_PROMPT_BLOCK);
 		expect(second.status).toBe(200);
+	});
+
+	it("keeps the recorded capture when a re-record arrives with an older timestamp", async () => {
+		await seedCapture(`${CLIENT_VERSION}-${claudeCodeEntrypoint}.json`, "2999-01-01T00:00:00.000Z");
+		const gateway = await bootGateway({ record: true });
+		const delegated = {
+			...claudeCodeBody(claudeCodeEntrypoint, false),
+			system: [
+				{
+					type: "text",
+					text: `${claudeCodeBillingHeaderPrefix} cc_version=${CLIENT_VERSION}; cc_entrypoint=${claudeCodeEntrypoint};`,
+				},
+				{ type: "text", text: claudeCodeSystemInstruction },
+				{ type: "text", text: SUBAGENT_PROMPT_BLOCK },
+			],
+		};
+
+		await post(gateway, "/v1/messages", delegated, ANTHROPIC_HEADERS);
+
+		const capture = await readCapture("claude-code", `${CLIENT_VERSION}-${claudeCodeEntrypoint}.json`);
+		expect(isRecord(capture) ? capture.capturedAt : undefined).toBe("2999-01-01T00:00:00.000Z");
+		expect((await servedPrompt("claude-code"))?.text).toBe(HARNESS_PROMPT_BLOCK);
+	});
+
+	it("never lets a request the capture contract rejects replace a valid capture", async () => {
+		await seedCapture(`${CLIENT_VERSION}-${claudeCodeEntrypoint}.json`, "2020-01-01T00:00:00.000Z");
+		const before = await readCapture("claude-code", `${CLIENT_VERSION}-${claudeCodeEntrypoint}.json`);
+
+		await recordTurn("/v1/messages", claudeCodeBody("sdk-cli", false), ANTHROPIC_HEADERS);
+
+		expect(await readCapture("claude-code", `${CLIENT_VERSION}-${claudeCodeEntrypoint}.json`)).toEqual(before);
+		expect((await servedPrompt("claude-code"))?.text).toBe(HARNESS_PROMPT_BLOCK);
 	});
 
 	it("records nothing and answers identically when record mode is off", async () => {
