@@ -48,7 +48,7 @@
 	"ompFraming": {
 		"family": "anthropic-messages",
 		"systemLayout": ["billing-header", "identity", "prompt"],
-		"cachedSystemSlots": ["identity:ephemeral"],
+		"cachedSystemSlots": ["identity:ephemeral", "prompt-last:ephemeral"],
 		"inventoryCarrier": "tools",
 		"namespaceStructure": null,
 		"envelope": {
@@ -79,7 +79,7 @@
 		"argumentDocStyle": "inline-property-descriptions"
 	},
 	"documentedFramingDeltas": {
-		"cachedSystemSlots": "The captured client sets two breakpoints — the identity block and the last system block — each `ephemeral` with `ttl: \"1h\"`. omp anchors only the identity block, at the default 5-minute TTL: `applyHeadCaching` (packages/ai/src/providers/anthropic.ts:3588) returns early because the OAuth identity block already carries a breakpoint, so the (equally stable) main prompt is left to whatever breakpoint the moving message tail contributes. Cost/latency divergence and a different cache prefix than the harness the model was trained under; reported, not fixed here."
+		"cachedSystemSlots": "Breakpoint placement matches the capture — the identity block and the last system block are both anchored under the profile (`applyHeadCaching`, packages/ai/src/providers/anthropic.ts). Only the TTL half differs: the captured client writes both at `ttl: \"1h\"`, while omp writes both at whatever `getCacheControl` resolves, which is the 5-minute default unless the user opts in via `providers.cacheRetention: \"long\"` / `PI_CACHE_RETENTION=long` (then both carry `ttl: \"1h\"` and this projection matches the vendor's exactly). Not defaulted to 1h on purpose: 1h writes carry a price premium and their effect on an Anthropic subscription quota under omp's session shape (larger prompts, subagents, more turns) is unmeasured, so the user opts in with the number in front of them. Reported, not fixed here."
 	},
 	"documentedInventoryDeltas": {
 		"declarationForms": "omp adds Anthropic's `eager_input_streaming` beta flag to every declaration (from catalog compat, not the profile) and `strict: true` to schema-strict tools; the captured client sends exactly `{description, input_schema, name}`. Behaviour-neutral for the backend, but a fingerprint difference on every request.",
@@ -87,6 +87,7 @@
 		"unboundNaming": "by design: omp keeps `grep`, `glob`, `todo`, `learn`, `recall` and MCP tools that the harness has no counterpart for, so their names legitimately stay in omp's convention (`lowercase`, `mcp-qualified`). The vendor projection passes every captured name as bound, so its unbound set is empty. Membership is the free half of the two-tier contract; `boundNaming` — the half that must match — carries no delta."
 	},
 	"notes": {
-		"fingerprintVersion": "omp's own wire fingerprint (`claudeCodeVersion` in packages/ai/src/providers/claude-code-fingerprint.ts) is 2.1.257, while the harness release these manifests and this golden were captured from is 2.1.267. The billing header and User-Agent therefore advertise an older CLI than the tool surface omp impersonates. Reported, not fixed here: bumping the fingerprint is a provider-owned change."
+		"fingerprintVersion": "omp's own wire fingerprint (`claudeCodeVersion` in packages/ai/src/providers/claude-code-fingerprint.ts) is 2.1.257, while the harness release these manifests and this golden were captured from is 2.1.267. The billing header and User-Agent therefore advertise an older CLI than the tool surface omp impersonates. Reported, not fixed here: bumping the fingerprint is a provider-owned change.",
+		"betaList": "omp's OAuth agent beta list (`claudeCodeAgentBetaDefaults` in packages/ai/src/providers/anthropic.ts) and the client's diverge in both directions. The client's list carries `redact-thinking-2026-02-12`, `advanced-tool-use-2025-11-20`, `effort-2025-11-24` and `extended-cache-ttl-2025-04-11`, which omp omits (omp adds `effort-2025-11-24` only on thinking requests); omp sends `thinking-token-count-2026-05-13`, which the client's does not. The comparison list is sourced from the headers the client sends to the usage endpoint (`CLAUDE_HEADERS` in packages/ai/src/usage/claude.ts), so the `/v1/messages` beta list is inferred rather than captured. Betas are feature flags, not inert fingerprint strings: each one changes what the server accepts, and removing `thinking-token-count` would drop the thinking-token accounting omp relies on today. `ttl: \"1h\"` was accepted live on the OAuth agent path without `extended-cache-ttl-2025-04-11`. Reported, not fixed here."
 	}
 }

@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import { scheduler } from "node:timers/promises";
 import * as tls from "node:tls";
 import { isAnthropicSigningProxyUrl, isOfficialAnthropicApiUrl } from "@oh-my-pi/pi-catalog/compat/anthropic";
-import { resolveHarnessProfile } from "@oh-my-pi/pi-catalog/compat/harness";
+import { type HarnessProfile, resolveHarnessProfile } from "@oh-my-pi/pi-catalog/compat/harness";
 import { hostMatchesUrl, isVertexRawPredictUrl } from "@oh-my-pi/pi-catalog/hosts";
 import { mapEffortToAnthropicAdaptiveEffort } from "@oh-my-pi/pi-catalog/model-thinking";
 import { calculateCost, getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -2164,9 +2164,10 @@ const streamAnthropicOnce = (
 					extraBetas.push(contextManagementBeta);
 				}
 				// `ttl: "1h"` requires the extended-cache-ttl beta on API-key
-				// requests. OAuth requests never add it here: agent requests
-				// already carry it in the Claude Code beta list, and utility
-				// requests must not deviate from CC's header fingerprint.
+				// requests. OAuth requests never add it: the server accepted
+				// `ttl: "1h"` on the OAuth agent path without the beta (verified
+				// live — usage came back with `cttl.ephemeral1h`, no error), and
+				// utility requests must not deviate from CC's header fingerprint.
 				if (
 					!(options?.isOAuth ?? isAnthropicOAuthToken(apiKey)) &&
 					getCacheControl(model, options?.cacheRetention).cacheControl?.ttl === "1h" &&
@@ -3554,13 +3555,19 @@ function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?:
  *
  * Anthropic allows at most 4 cache breakpoints per request. At most one is
  * spent on tools and one on system here, leaving two for the message tail in
- * `applyPromptCaching`. Head caching is skipped entirely when the head is
- * already anchored — the OAuth Claude Code path caches its own instruction
- * block at buildAnthropicSystemBlocks, and via the canonical tools → system
- * order that single system breakpoint already caches every preceding tool. Re-
- * anchoring there would be redundant, would change the OAuth wire, and could
- * push a tool-heavy request over the 4-breakpoint budget, so the general
- * API-key path (nothing cached upstream) is the only one decorated here.
+ * `applyPromptCaching`. When the head is already anchored — the OAuth Claude
+ * Code path caches its own instruction block at buildAnthropicSystemBlocks,
+ * and via the canonical tools → system order that single system breakpoint
+ * already caches every preceding tool — the tool breakpoint is never added:
+ * it would be redundant, would change the OAuth wire, and could push a
+ * tool-heavy request over the 4-breakpoint budget. The general API-key path
+ * (nothing cached upstream) is the only one that gets both head breakpoints.
+ *
+ * The `claude-code` harness profile is the one exception on the system side:
+ * the captured client anchors both its identity block and its last system
+ * block (see the vendorFraming of the claude-code golden), so the profile adds
+ * the last-system breakpoint even when the identity block is already cached.
+ * Two system breakpoints plus the two tail breakpoints still fit the budget.
  *
  * Runs after the byte-stability plane (planStableAnthropicSystem /
  * planStableAnthropicTools), which hands back fresh block/tool copies each turn
@@ -3570,17 +3577,22 @@ function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?:
 function applyHeadCaching(
 	systemBlocks: AnthropicSystemBlock[] | undefined,
 	tools: AnthropicWireTool[] | undefined,
-	cacheControl?: AnthropicCacheControl,
+	cacheControl: AnthropicCacheControl | undefined,
+	harnessProfile: HarnessProfile | undefined,
 ): void {
 	if (!cacheControl) return;
 
 	// If anything in the head already carries a breakpoint, the head is already
 	// cached (OAuth anchors its identity system block, which — canonical order
-	// tools → system — caches all tools too). Leave it untouched.
+	// tools → system — caches all tools too). Leave it untouched, except for
+	// the claude-code profile's second system breakpoint.
 	const headAlreadyCached =
 		(systemBlocks?.some(block => block.cache_control != null) ?? false) ||
 		(tools?.some(tool => tool.cache_control != null) ?? false);
-	if (headAlreadyCached) return;
+	if (headAlreadyCached) {
+		if (harnessProfile === "claude-code") anchorLastSystemBlock(systemBlocks, cacheControl);
+		return;
+	}
 
 	if (tools && tools.length > 0) {
 		// Deferred tools are not part of the checked prefix until referenced, so
@@ -3593,10 +3605,16 @@ function applyHeadCaching(
 		}
 	}
 
-	if (systemBlocks && systemBlocks.length > 0) {
-		const lastBlock = systemBlocks[systemBlocks.length - 1];
-		if (lastBlock) lastBlock.cache_control = cloneAnthropicCacheControl(cacheControl);
-	}
+	anchorLastSystemBlock(systemBlocks, cacheControl);
+}
+
+function anchorLastSystemBlock(
+	systemBlocks: AnthropicSystemBlock[] | undefined,
+	cacheControl: AnthropicCacheControl,
+): void {
+	if (!systemBlocks || systemBlocks.length === 0) return;
+	const lastBlock = systemBlocks[systemBlocks.length - 1];
+	if (lastBlock && lastBlock.cache_control == null) lastBlock.cache_control = cloneAnthropicCacheControl(cacheControl);
 }
 
 function usesAdaptiveThinkingTagOnly(model: Model<"anthropic-messages">): boolean {
@@ -4080,7 +4098,7 @@ function buildParams(
 	tools = planStableAnthropicTools(tools, wireMessages, controlState, model.compat.supportsMidConversationToolChanges);
 	// Anchor the stable tools+system head so it stays cached across turns; the
 	// moving message tail is anchored separately in applyPromptCaching below.
-	applyHeadCaching(systemBlocks, tools, cacheControl);
+	applyHeadCaching(systemBlocks, tools, cacheControl, resolveHarnessProfile(model));
 	const topLevelEffort = planStableAnthropicEffort(
 		outputConfigEffort,
 		wireMessages,
