@@ -762,6 +762,13 @@ function scopeClaudeLimitsForModelHardBlock(
 	});
 }
 
+/** Tiers Anthropic meters separately, so a block scoped to one leaves the others selectable. */
+const CLAUDE_TIER_BLOCK_SCOPES = ["fable", "mythos"] as const;
+
+function isClaudeTierBlockScope(kind: ClaudeModelKind | undefined): kind is (typeof CLAUDE_TIER_BLOCK_SCOPES)[number] {
+	return kind === "fable" || kind === "mythos";
+}
+
 function rankingUsedFraction(limit: UsageLimit): number {
 	const fraction = resolveUsedFraction(limit);
 	if (typeof fraction !== "number" || !Number.isFinite(fraction)) return 0.5;
@@ -825,7 +832,25 @@ export const claudeRankingStrategy: CredentialRankingStrategy = {
 	 */
 	blockScope(context) {
 		const kind = getClaudeModelKind(context);
-		return kind === "fable" || kind === "mythos" ? `tier:${kind}` : undefined;
+		return isClaudeTierBlockScope(kind) ? `tier:${kind}` : undefined;
+	},
+	// A Fable/Mythos 429 carries a retry-after at the weekly reset, but the
+	// window rolls on its own schedule and Anthropic restores the tier earlier.
+	// Without this the block outlives the exhaustion: an account whose report
+	// now reads 0% stays skipped until the stored clock runs out, so a turn
+	// walks the model fallback chain while a healthy seat sits idle. One scope
+	// per tier the report names, judged by the shared windows plus that tier's
+	// own rows — the same limits `scopeClaudeLimitsForModelHardBlock` gates
+	// selection on.
+	healableBlockScopes(report) {
+		const shared = report.limits.filter(limit => limit.scope.shared === true);
+		const scopes = [{ blockScope: "", limits: shared }];
+		for (const tier of CLAUDE_TIER_BLOCK_SCOPES) {
+			const tierLimits = report.limits.filter(limit => limit.scope.tier === tier);
+			if (tierLimits.length === 0) continue;
+			scopes.push({ blockScope: `tier:${tier}`, limits: [...shared, ...tierLimits] });
+		}
+		return scopes;
 	},
 	windowDefaults: { primaryMs: 5 * 60 * 60 * 1000, secondaryMs: 7 * 24 * 60 * 60 * 1000 },
 };

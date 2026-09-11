@@ -4,6 +4,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { AuthStorage, type OAuthCredential, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
+import type { UsageLimit } from "@oh-my-pi/pi-ai/usage";
 import { removeWithRetries } from "../../utils/src/temp";
 
 const PROVIDER = "anthropic";
@@ -23,6 +24,26 @@ function oauthCredential(suffix: string): OAuthCredential {
 		accountId: `account-${suffix}`,
 		email: `${suffix}@example.com`,
 	};
+}
+
+function claudeLimit(id: string, usedFraction: number, scope: { shared?: boolean; tier?: string }): UsageLimit {
+	return {
+		id,
+		label: id,
+		scope: { provider: PROVIDER, ...scope },
+		window: { id, label: id, resetsAt: Date.now() + 60_000 },
+		amount: { usedFraction, unit: "percent" },
+		status: usedFraction >= 1 ? "exhausted" : "ok",
+	};
+}
+
+function ageCredentialBlocks(dbPath: string, updatedAtSec: number): void {
+	const db = new Database(dbPath);
+	try {
+		db.run("UPDATE auth_credential_blocks SET updated_at = ?", [updatedAtSec]);
+	} finally {
+		db.close();
+	}
 }
 
 function readAuthSchemaVersion(dbPath: string): number | null {
@@ -127,6 +148,68 @@ describe("AuthStorage credential block persistence", () => {
 		if (tempDir) {
 			await removeWithRetries(tempDir);
 			tempDir = "";
+		}
+	});
+
+	it("re-includes a tier-blocked account once its live report shows the tier recovered", async () => {
+		const setup = await SqliteAuthCredentialStore.open(dbPath);
+		setup.saveOAuth(PROVIDER, oauthCredential("spent"));
+		setup.saveOAuth(PROVIDER, oauthCredential("recovered"));
+		const [spentRow, recoveredRow] = setup.listAuthCredentials(PROVIDER);
+		// Both accounts were blocked for the Fable tier days ago, with the weekly
+		// reset as the expiry. Ageing `updated_at` past the usage-cache window is
+		// what makes them healable: a block written this instant is deliberately
+		// held, since `/usage` lags the 429 that wrote it.
+		for (const row of [spentRow, recoveredRow]) {
+			setup.upsertCredentialBlock({
+				credentialId: row!.id,
+				providerKey: PROVIDER_KEY,
+				blockScope: "tier:fable",
+				blockedUntilMs: FUTURE_BLOCK_MS,
+			});
+		}
+		setup.close();
+		ageCredentialBlocks(dbPath, LEGACY_TIMESTAMP);
+
+		const store = await SqliteAuthCredentialStore.open(dbPath);
+		const storage = new AuthStorage(store, {
+			usageProviderResolver: provider =>
+				provider === PROVIDER
+					? {
+							id: PROVIDER,
+							fetchUsage: async params => ({
+								provider: PROVIDER,
+								fetchedAt: Date.now(),
+								limits: [
+									claudeLimit("anthropic:7d", 0.6, { shared: true }),
+									// The account this test recovers reports an empty Fable
+									// week; the other stays exhausted.
+									claudeLimit(
+										"anthropic:7d:fable",
+										params.credential.accountId === "account-recovered" ? 0 : 1,
+										{ tier: "fable" },
+									),
+								],
+								metadata: { accountId: params.credential.accountId },
+							}),
+						}
+					: undefined,
+		});
+		await storage.reload();
+		try {
+			const key = await storage.getApiKey(PROVIDER, "session-heal", { modelId: "claude-fable-5-1" });
+
+			expect(key).toBe("access-recovered");
+			const scopes = readCredentialBlockRows(dbPath)
+				.filter(row => row.credential_id === recoveredRow!.id)
+				.map(row => row.block_scope);
+			expect(scopes).not.toContain("tier:fable");
+			const spentScopes = readCredentialBlockRows(dbPath)
+				.filter(row => row.credential_id === spentRow!.id)
+				.map(row => row.block_scope);
+			expect(spentScopes).toContain("tier:fable");
+		} finally {
+			storage.close();
 		}
 	});
 

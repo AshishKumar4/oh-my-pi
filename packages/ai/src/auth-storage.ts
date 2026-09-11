@@ -2247,9 +2247,11 @@ export class AuthStorage {
 					selection.index,
 					args.blockScopes ?? args.blockScope,
 				);
-				if (blockedUntil !== undefined) {
+				if (blockedUntil !== undefined && !this.#supportsUsageBlockHealing(args.provider)) {
 					return { selection, usage: null, usageChecked: false, blockedUntil };
 				}
+				// The fetch feeds #reconcileUsageBlock, so a blocked candidate whose
+				// report reads healthy is re-read below and re-enters this pass.
 				const usage = await this.#getUsageReport(args.provider, selection.credential, {
 					...args.options,
 					timeoutMs: this.#usageRequestTimeoutMs,
@@ -2258,7 +2260,15 @@ export class AuthStorage {
 					selection,
 					usage,
 					usageChecked: true,
-					blockedUntil: undefined,
+					blockedUntil:
+						blockedUntil === undefined
+							? undefined
+							: this.#getCredentialBlockedUntil(
+									args.provider,
+									args.providerKey,
+									selection.index,
+									args.blockScopes ?? args.blockScope,
+								),
 				};
 			}),
 		);
@@ -5012,7 +5022,12 @@ export class AuthStorage {
 				);
 				let usage: UsageReport | null = null;
 				let usageChecked = false;
-				if (blockedUntil !== undefined && args.provider === "openai-codex") {
+				// Any provider whose live report can vouch for a scope gets probed
+				// while blocked: a block derived from a 429 retry-after can outlive
+				// the real reset, and skipping the report made that
+				// self-perpetuating — never re-read, never healed, idle until the
+				// stored clock expired while the turn walked the fallback chain.
+				if (blockedUntil !== undefined && this.#supportsUsageBlockHealing(args.provider)) {
 					usage = await this.#getUsageReport(args.provider, selection.credential, {
 						...args.options,
 						timeoutMs: this.#usageRequestTimeoutMs,
