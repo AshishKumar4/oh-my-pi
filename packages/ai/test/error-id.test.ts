@@ -101,6 +101,12 @@ describe("error-id classification", () => {
 		expect(AIError.retriable(denialId)).toBe(false);
 		expect(AIError.isAccountPolicyError(denial)).toBe(true);
 
+		// Providers also surface the denial as a structured code rather than in
+		// the message body, and that path is classified separately.
+		expect(AIError.isAccountPolicyError(new Error("denied", { cause: { code: "oauth_not_allowed_for_organization" } }))).toBe(
+			true,
+		);
+
 		// A 403 that is not account-scoped must keep falling through to the
 		// generic auth path: blocking the credential would strand it.
 		const unrelated = message({

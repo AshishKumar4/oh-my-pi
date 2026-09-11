@@ -152,11 +152,11 @@ describe("AuthStorage credential block persistence", () => {
 					modelId: "claude-fable-5-1",
 				}),
 			).toBe(true);
-			const deniedId = store.listAuthCredentials(PROVIDER).find(row => `access-${"org"}` === denied)?.id;
+			const orgId = store.listAuthCredentials(PROVIDER)[0]!.id;
 			const orgRows = readCredentialBlockRows(dbPath);
 			expect(orgRows).toHaveLength(1);
 			const orgBlock = orgRows[0]!;
-			if (deniedId !== undefined) expect(orgBlock.credential_id).toBe(deniedId);
+			expect(orgBlock.credential_id).toBe(orgId);
 			// Provider-wide, not tier-scoped: an org prohibition denies every model.
 			expect(orgBlock.block_scope).toBe("");
 			// Bounded so an administrator lifting the org policy self-heals.

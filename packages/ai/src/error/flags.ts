@@ -171,8 +171,7 @@ const EMPTY_RESPONSE_PATTERN = /\bthought-only response without final output\b/i
 const CONTENT_FILTER_PATTERN = /\b(?:incomplete:\s*)?content_filter\b/i;
 const ORG_OAUTH_DENIAL_PATTERN =
 	/\boauth_not_allowed_for_organization\b|oauth authentication is currently not allowed for this organization/i;
-const ACCOUNT_POLICY_PATTERN =
-	/\bcyber_policy\b|trusted access for cyber|\boauth_not_allowed_for_organization\b|oauth authentication is currently not allowed for this organization/i;
+const ACCOUNT_POLICY_PATTERN = /\bcyber_policy\b|trusted access for cyber/i;
 const CODEX_CHATGPT_ACCOUNT_MODEL_POLICY_PATTERN =
 	/\bThe ['"]([^'"\r\n]+)['"] model is not supported when using Codex with a ChatGPT account\./i;
 const CODEX_CHATGPT_ACCOUNT_MODEL_MAX_LENGTH = 256;
@@ -460,6 +459,7 @@ function classifyText(
 		if (isContentBlockedText(errorMessage)) kinds |= Flag.ContentBlocked;
 		if (
 			ACCOUNT_POLICY_PATTERN.test(errorMessage) ||
+			ORG_OAUTH_DENIAL_PATTERN.test(errorMessage) ||
 			isCodexChatGPTAccountPolicyText(errorMessage, provider, modelId) ||
 			(provider === "cursor" && isCursorPlanPolicyText(errorMessage))
 		) {
@@ -539,7 +539,11 @@ export function classify(error: unknown, api?: Api): number {
 			if ("errorId" in link && typeof (link as { errorId: unknown }).errorId === "number") {
 				kinds |= (link as { errorId: number }).errorId & KIND_MASK;
 			}
-			if ("code" in link && typeof link.code === "string" && ACCOUNT_POLICY_PATTERN.test(link.code)) {
+			if (
+				"code" in link &&
+				typeof link.code === "string" &&
+				(ACCOUNT_POLICY_PATTERN.test(link.code) || ORG_OAUTH_DENIAL_PATTERN.test(link.code))
+			) {
 				kinds |= Flag.AccountPolicy | Flag.ContentBlocked;
 			}
 		}
