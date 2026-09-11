@@ -131,18 +131,21 @@ describe("approval parity under a harness rename", () => {
 		}
 	});
 
-	it("presents Claude Code's Bash fields under the profile and maps ms timeouts and backgrounding", async () => {
+	it("presents Claude Code's Bash fields under the profile and keeps timeout in omp seconds", async () => {
 		const tool = new BashTool(toolSession([], CLAUDE_CODE_MODEL));
+		const native = new BashTool(toolSession());
 		const wire = validateArgs(tool, {
 			type: "toolCall",
 			id: "c",
 			name: "Bash",
-			arguments: { command: "echo hi", timeout: 2500, description: "Print hi", run_in_background: false },
+			arguments: { command: "echo hi", timeout: 900, description: "Print hi", run_in_background: false },
 		});
-		expect(wire).toMatchObject({ command: "echo hi", timeout: 2500 });
-		const schema = toolWireSchema({ name: "bash", description: "", parameters: tool.parameters }) as {
-			properties: Record<string, unknown>;
-		};
+		expect(wire).toMatchObject({ command: "echo hi", timeout: 900 });
+		const schemaOf = (candidate: BashTool) =>
+			toolWireSchema({ name: "bash", description: "", parameters: candidate.parameters }) as {
+				properties: Record<string, { description?: string }>;
+			};
+		const schema = schemaOf(tool);
 		expect(Object.keys(schema.properties)).toEqual([
 			"command",
 			"timeout",
@@ -150,10 +153,17 @@ describe("approval parity under a harness rename", () => {
 			"run_in_background",
 			"dangerouslyDisableSandbox",
 		]);
+		expect(schema.properties.timeout?.description).toMatch(/timeout in seconds/);
+		expect(schema.properties.timeout?.description).toBe(schemaOf(native).properties.timeout?.description);
 		expect(tool.intent({ command: "echo hi", description: "Print hi" })).toBe("Print hi");
-		const result = await tool.execute("c", { command: "echo hi", timeout: 2500 });
+		const result = await tool.execute("c", { command: "echo hi", timeout: 900 });
 		expect(result.isError).toBeFalsy();
-		expect(result.details?.requestedTimeoutSeconds ?? result.details?.timeoutSeconds).toBe(3);
+		expect(result.details?.timeoutSeconds).toBe(900);
+		expect(result.details?.requestedTimeoutSeconds).toBeUndefined();
+		const nativeResult = await native.execute("c", { command: "echo hi", timeout: 900 });
+		expect(nativeResult.details?.timeoutSeconds).toBe(900);
+		const disabled = await tool.execute("c", { command: "echo hi", timeout: 0 });
+		expect(disabled.details?.timeoutDisabled).toBe(true);
 		await expect(tool.execute("c", { command: "sleep 0", run_in_background: true })).rejects.toThrow(
 			/run_in_background/,
 		);

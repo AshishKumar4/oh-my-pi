@@ -336,9 +336,12 @@ const bashSchemaWithAsync = type({
 	"async?": type("boolean").describe("run in background"),
 });
 
+// Vendor Bash.timeout is milliseconds (max 600000); omp keeps seconds here. Resumed
+// sessions carry seconds-valued Bash calls in history, and in-context history beats a
+// schema description, so a ms bridge silently pinned every deadline to the 1s clamp floor.
 const claudeCodeBashSchema = type({
 	command: type("string").describe("command to execute"),
-	"timeout?": type("number").describe("timeout in milliseconds (max 600000)"),
+	"timeout?": type("number").describe(BASH_TIMEOUT_DESCRIPTION),
 	"description?": type("string").describe("what this command does, in plain words"),
 	"run_in_background?": type("boolean").describe("run in background"),
 	"dangerouslyDisableSandbox?": type("boolean").describe("not supported"),
@@ -357,7 +360,7 @@ const BASH_BRIDGES: HarnessBridges<BashToolInput, typeof claudeCodeBashSchema> =
 			}
 			return {
 				command: args.command,
-				...(args.timeout !== undefined && args.timeout > 0 ? { timeout: Math.ceil(args.timeout / 1000) } : {}),
+				...(args.timeout !== undefined ? { timeout: args.timeout } : {}),
 				...(args.run_in_background !== undefined ? { async: args.run_in_background } : {}),
 			};
 		},
