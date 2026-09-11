@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from "bun:test";
 import * as cascade from "../src/compat/cascade";
 import { resolveHarnessProfile } from "../src/compat/harness";
 import { getBundledModel } from "../src/models";
+import type { Model } from "../src/types";
 
 describe("resolveHarnessProfile", () => {
 	afterEach(() => {
@@ -21,11 +22,13 @@ describe("resolveHarnessProfile", () => {
 		expect(spy).not.toHaveBeenCalled();
 	});
 
-	test("a freshly built model object resolves its own profile", () => {
-		const first = getBundledModel("openai-codex", "gpt-6-astra");
-		resolveHarnessProfile(first);
-		const second = getBundledModel("anthropic", "claude-fable-5");
+	test("a re-routed clone resolves against its own api, not a shared id", () => {
+		const direct = getBundledModel("anthropic", "claude-opus-5");
+		expect(resolveHarnessProfile(direct)).toBe("claude-code");
 
-		expect(resolveHarnessProfile(second)).toBe("claude-code");
+		// The shape `prepareModel` hands the stream: one provider/id pair, rewritten api.
+		const rerouted: Model = { ...direct, api: "openai-completions" };
+
+		expect(resolveHarnessProfile(rerouted)).toBeUndefined();
 	});
 });
