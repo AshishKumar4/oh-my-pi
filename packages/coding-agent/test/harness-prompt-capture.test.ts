@@ -28,12 +28,16 @@ const HARNESS_MEMORY_BLOCK = [
 	"",
 	"Use `Bash` for shell work.",
 ].join("\n");
-const HARNESS_MEMORY_SCRUBBED = [
+const HARNESS_MEMORY_REDACTED = [
 	"You are a coding CLI.",
 	"",
 	"# Working style",
 	"",
 	"Be terse.",
+	"",
+	"# Memory",
+	"",
+	"You have a persistent file-based memory at `[redacted-session-path]`. Write each fact there with the Write tool.",
 	"",
 	"# Tools",
 	"",
@@ -205,14 +209,48 @@ describe("harness prompt custody", () => {
 		expect(promptText).not.toContain("# CLAUDE.md instructions");
 	});
 
-	it("scrubs the recording-session memory section while keeping the surrounding sections byte-exact", async () => {
+	it("redacts the recording-session path in place while keeping the memory section byte-exact", async () => {
 		writeCapture({ instructions: [RECORDED_BILLING_BLOCK, claudeCodeSystemInstruction, HARNESS_MEMORY_BLOCK] });
 
 		const { systemPrompt } = await build("claude-code");
 
-		expect(systemPrompt[0]).toBe(HARNESS_MEMORY_SCRUBBED);
-		expect(systemPrompt[0]).not.toContain("# Memory");
+		expect(systemPrompt[0]).toBe(HARNESS_MEMORY_REDACTED);
+		expect(systemPrompt[0]).toContain("# Memory");
 		expect(systemPrompt.join("\n\n")).not.toContain("/tmp/ccrec-synthetic");
+	});
+
+	it("keeps a vendor section that merely mentions a path, redacting only the token", async () => {
+		const toolsNote = "# Tools\n\nPrefer the file tools; shell logs land under /tmp/vendor-logs/ on failure.";
+		writeCapture({ instructions: [RECORDED_BILLING_BLOCK, claudeCodeSystemInstruction, toolsNote] });
+
+		const { systemPrompt } = await build("claude-code");
+
+		expect(systemPrompt[0]).toBe(
+			"# Tools\n\nPrefer the file tools; shell logs land under [redacted-session-path] on failure.",
+		);
+	});
+
+	it("redacts session paths under roots the old content sniff missed", async () => {
+		const exotic = "# Memory\n\nState lives at /root/.config/s1 on this machine.";
+		const windows = "# Tools\n\nPer-machine state lives at C:\\Users\\bot\\memory on this machine.";
+		writeCapture({ instructions: [RECORDED_BILLING_BLOCK, claudeCodeSystemInstruction, exotic, windows] });
+
+		const { systemPrompt } = await build("claude-code");
+		const promptText = systemPrompt.join("\n\n");
+
+		expect(promptText).not.toContain("/root/.config/s1");
+		expect(promptText).not.toContain("C:\\Users\\bot\\memory");
+		expect(promptText).toContain("# Memory");
+		expect(promptText).toContain("# Tools");
+	});
+
+	it("leaves bare environment references the vendor wrote generically untouched", async () => {
+		const sandbox = "# Sandboxing\n\nNever repurpose `$HOME`; do not use `$HOME`, `~`, or `/` as a command target.";
+		writeCapture({ instructions: [RECORDED_BILLING_BLOCK, claudeCodeSystemInstruction, sandbox] });
+
+		const { systemPrompt } = await build("claude-code");
+
+		expect(systemPrompt[0]).toBe(sandbox);
 	});
 
 	it("routes each profile to its own capture", async () => {

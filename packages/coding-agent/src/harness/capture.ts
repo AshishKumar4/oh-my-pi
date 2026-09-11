@@ -71,25 +71,19 @@ function stripWireOwnedLines(block: string, wireOwned: WireOwnedLeading): string
 	}
 }
 
-const SESSION_PATH_ROOTS: readonly string[] = ["/home/", "/Users/", "/tmp/", "/var/", "/private/"];
+const SESSION_PATH_TOKEN =
+	/(?<![A-Za-z0-9_:.])(?:\/(?:home|Users|root|data|tmp|var|private)(?:\/\S*)?|[A-Za-z]:[\\/]\S*|\\\\[^\s"'`]+)/g;
 
-function scrubSessionSections(block: string): string {
-	const boundaries: number[] = [];
-	const heading = /^# /gm;
-	for (;;) {
-		const match = heading.exec(block);
-		if (match === null) break;
-		boundaries.push(match.index);
-	}
-	if (boundaries.length === 0) return block;
-	let scrubbed = block.slice(0, boundaries[0] ?? 0);
-	for (let index = 0; index < boundaries.length; index += 1) {
-		const start = boundaries[index] ?? 0;
-		const next = boundaries[index + 1];
-		const section = block.slice(start, next ?? block.length);
-		if (!SESSION_PATH_ROOTS.some(root => section.includes(root))) scrubbed += section;
-	}
-	return scrubbed;
+const REDACTED_SESSION_PATH = "[redacted-session-path]";
+
+const TRAILING_FENCE = /[`'"')\]}.,;:!?]+$/;
+
+function redactSessionPaths(block: string): string {
+	return block.replace(SESSION_PATH_TOKEN, token => {
+		const exposed = token.replace(TRAILING_FENCE, "");
+		if (exposed.length === 0) return token;
+		return `${REDACTED_SESSION_PATH}${token.slice(exposed.length)}`;
+	});
 }
 
 function isAmbient(block: string, ambient: readonly string[]): boolean {
@@ -131,8 +125,7 @@ export function projectHarnessCapture(profile: HarnessProfile, raw: unknown): Ca
 		afterBillingHeader = false;
 		if (isAmbient(compared, ambient)) continue;
 		leading = false;
-		const scrubbed = scrubSessionSections(text);
-		if (scrubbed.trim().length === 0) continue;
+		const scrubbed = redactSessionPaths(text);
 		blocks.push(scrubbed);
 	}
 	if (blocks.length === 0) return { ok: false, reason: "instructions-empty" };
