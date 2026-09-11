@@ -8,6 +8,14 @@ function isHarnessProfile(value: unknown): value is HarnessProfile {
 	return typeof value === "string" && (HARNESS_PROFILES as readonly string[]).includes(value);
 }
 
+/**
+ * Keyed on the model object, never on its id: the profile axis selects on
+ * api, class, family, and revision, and the per-request `prepareModel` clones
+ * (cloudflare-ai-gateway, the OpenAI/Anthropic shims) re-emit one provider/id
+ * pair under a rewritten api. A miss walks the whole rule cascade — measured
+ * 7.7µs against a 10ns hit — and a live session resolves one object per model,
+ * so the cascade runs once and the several hundred later reads are lookups.
+ */
 const RESOLVED_PROFILES = new WeakMap<Model, HarnessProfile | null>();
 
 export function resolveHarnessProfile(model: Model): HarnessProfile | undefined {
