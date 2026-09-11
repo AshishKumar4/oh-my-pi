@@ -189,25 +189,6 @@ interface XdevMountNoticeDetails {
 	removed: string[];
 }
 
-const kHarnessPresentation = Symbol("harnessPresentation");
-
-function declaredWireNameReader(tool: AgentTool): () => string | undefined {
-	for (let node: object | null = tool; node !== null; node = Object.getPrototypeOf(node)) {
-		const descriptor = Object.getOwnPropertyDescriptor(node, "customWireName");
-		if (!descriptor) continue;
-		const read = descriptor.get;
-		if (!read) {
-			const declared = descriptor.value;
-			return () => (typeof declared === "string" ? declared : undefined);
-		}
-		return () => {
-			const declared = read.call(tool);
-			return typeof declared === "string" ? declared : undefined;
-		};
-	}
-	return () => undefined;
-}
-
 /** Owns tool registration, presentation, prompt rebuilding, skills, and permissions. */
 export class SessionTools {
 	readonly #host: SessionToolsHost;
@@ -297,7 +278,6 @@ export class SessionTools {
 			}
 		}
 		for (const [name, tool] of this.#toolRegistry) {
-			this.#bindHarnessPresentation(tool);
 			if (isMCPToolName(name) && !this.#mcpManagerToolNames.has(name)) {
 				this.#extensionMcpTools.set(name, tool);
 			}
@@ -756,27 +736,6 @@ export class SessionTools {
 		return activeModel === undefined ? undefined : resolveHarnessProfile(activeModel);
 	}
 
-	#bindHarnessPresentation(tool: AgentTool): void {
-		if (kHarnessPresentation in tool) return;
-		const declaredWireName = declaredWireNameReader(tool);
-		Object.defineProperties(tool, {
-			[kHarnessPresentation]: { value: true, enumerable: false, configurable: true },
-			customWireName: {
-				get: () => harnessToolBinding(this.#harnessProfile(), tool.name)?.wireName ?? declaredWireName(),
-				enumerable: true,
-				configurable: true,
-			},
-			namespace: {
-				get: () => {
-					const name = harnessToolBinding(this.#harnessProfile(), tool.name)?.namespace;
-					return name === undefined ? undefined : { name };
-				},
-				enumerable: true,
-				configurable: true,
-			},
-		});
-	}
-
 	/** Registry tools as `profile` presents them; the registry itself when no profile applies. */
 	#presentedRegistry(profile: HarnessProfile | undefined): Map<string, AgentTool> {
 		if (profile === undefined) return this.#toolRegistry;
@@ -977,7 +936,6 @@ export class SessionTools {
 			const goalRegistration = this.#ensureGoalRegistered?.();
 			if (goalRegistration) await untilAborted(signal, goalRegistration);
 		}
-		for (const tool of this.#toolRegistry.values()) this.#bindHarnessPresentation(tool);
 		const presentedRegistry = this.#presentedRegistry(profile);
 		const selectedTools = toolNames.flatMap(name => {
 			const tool = presentedRegistry.get(name);
