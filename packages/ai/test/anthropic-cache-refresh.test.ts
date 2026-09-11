@@ -3,8 +3,7 @@ import { streamSimple } from "@oh-my-pi/pi-ai";
 import type { CacheControlEphemeral, MessageCreateParams } from "@oh-my-pi/pi-ai/providers/anthropic-wire";
 import type { CacheRetention, Context, FetchImpl, Model, ProviderSessionState } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import { withEnv, withOfficialAnthropicEndpoint } from "./helpers";
+import { withOfficialAnthropicEndpoint } from "./helpers";
 
 const CACHE_REFRESH_DELAY_MS = 5 * 60_000 - 15_000;
 const CACHE_TOKENS = 1_200;
@@ -26,8 +25,6 @@ const thinkingModel: Model<"anthropic-messages"> = buildModel({
 	...model,
 	reasoning: true,
 });
-
-const harnessModel = getBundledModel<"anthropic-messages">("anthropic", "claude-opus-5");
 
 const context: Context = {
 	messages: [{ role: "user", content: "Keep this prefix warm.", timestamp: 1 }],
@@ -146,9 +143,18 @@ function thinkingRefreshResponse(signal: AbortSignal | null | undefined, capture
 	});
 }
 
+/**
+ * OAuth requests are re-encoded to a `Uint8Array` by `wrapFetchForCch` so the
+ * billing-header attestation can be patched in place, so decode both shapes.
+ */
+function readRequestBody(body: unknown): MessageCreateParams {
+	const text = body instanceof Uint8Array ? new TextDecoder().decode(body) : String(body ?? "{}");
+	return JSON.parse(text) as MessageCreateParams;
+}
+
 function createFetch(modes: ResponseMode[], capture: FetchCapture): FetchImpl {
 	return async (input, init) => {
-		const body: MessageCreateParams = JSON.parse(String(init?.body ?? "{}"));
+		const body = readRequestBody(init?.body);
 		capture.bodies.push(body);
 		const mode = modes[capture.bodies.length - 1];
 		switch (mode) {
@@ -168,6 +174,7 @@ interface FinishRequestOptions {
 	cacheRetention?: CacheRetention;
 	model?: Model<"anthropic-messages">;
 	sessionId?: string;
+	apiKey?: string;
 }
 
 async function finishRequest(
@@ -178,7 +185,7 @@ async function finishRequest(
 	const requestModel = options.model ?? model;
 	const stream = streamSimple(requestModel, context, {
 		fetch,
-		apiKey: "test-anthropic-key",
+		apiKey: options.apiKey ?? "test-anthropic-key",
 		anthropicCacheRefresh: options.anthropicCacheRefresh ?? true,
 		cacheRetention: options.cacheRetention,
 		providerSessionState,
@@ -318,17 +325,21 @@ describe("Anthropic prompt-cache refresh", () => {
 		}
 	});
 
-	it("never installs the keep-warm loop under the claude-code profile", async () => {
+	it("arms no keep-alive refresh for an OAuth request with automatic retention", async () => {
+		// The coding agent enables `anthropicCacheRefresh` and never passes an explicit
+		// retention, so `streamSimpleWithAnthropicCacheRefresh` resolves the omitted value
+		// as `short` and installs the refresh state. Only the emitted payload proves the
+		// 4m45 timer stays unarmed: OAuth now defaults to 1h, so no short breakpoint exists
+		// for `hasShortAnthropicMessageBreakpoint` to find.
 		vi.useFakeTimers();
 		const capture: FetchCapture = { bodies: [], thinkingRefreshAborted: false };
 		const fetch = createFetch(["ordinary-write"], capture);
 		const states = createProviderSessionState();
 
-		await withEnv({ PI_CACHE_RETENTION: undefined }, () => finishRequest(fetch, states, { model: harnessModel }));
-		vi.advanceTimersByTime(CACHE_REFRESH_DELAY_MS * 2);
+		await finishRequest(fetch, states, { apiKey: "sk-ant-oat-test-subscriber" });
+		vi.advanceTimersByTime(CACHE_REFRESH_DELAY_MS * 4);
 		await Promise.resolve();
 
-		expect(states.has("anthropic-cache-refresh")).toBe(false);
 		expect(capture.bodies).toHaveLength(1);
 		const blocks = (capture.bodies[0]?.messages ?? []).flatMap(message =>
 			Array.isArray(message.content) ? message.content : [],
@@ -336,6 +347,9 @@ describe("Anthropic prompt-cache refresh", () => {
 		const breakpoints = blocks
 			.map(block => ("cache_control" in block ? (block.cache_control ?? undefined) : undefined))
 			.filter((cc): cc is CacheControlEphemeral => cc != null);
-		expect(breakpoints.map(cc => cc.ttl)).toEqual(["1h"]);
+		expect(breakpoints.length).toBeGreaterThan(0);
+		for (const cc of breakpoints) {
+			expect(cc.ttl).toBe("1h");
+		}
 	});
 });

@@ -2,12 +2,21 @@
 
 ## [Unreleased]
 
+### Added
+
+- `supports-server-compaction` compat axis (`compat.supportsServerCompaction`): whether a model line accepts Anthropic server-side compaction (`compact-2026-01-12`). Class rules enable it for Opus 4.6+, Sonnet 4.6+, and Fable/Mythos 5 on every Anthropic-messages host; the default is `false`.
+### Fixed
+
+- Amazon Bedrock OpenAI models, plus unclassified profiles such as opaque application-inference-profile ARNs, now carry the compatibility policy required to preserve image-bearing tool results ([#11681](https://github.com/can1357/oh-my-pi/issues/11681)).
+- DeepSeek V4.1 Flash requests now honor the documented 384K output maximum instead of being capped at 64K ([#11769](https://github.com/can1357/oh-my-pi/issues/11769)).
+
 ## [18.1.17] - 2026-09-10
 
 ### Added
 
 - New `harness-profile` compat axis records the vendor request surface a model was post-trained on, so the harness recorder and the providers can serve that surface instead of omp's own: `claude-code` for `claude-opus-5`, `claude-fable-5` and `claude-fable-5-1` on the Anthropic Messages API, `codex` for `gpt-6-astra` and `gpt-5.6-sol` on the Codex route, and no profile for every other model. The pinned Codex client version is now `0.154.0`, matching the captured client so model discovery and `/responses` see the current client gate.
 
+- Added DeepSeek V4.1 Flash on OpenRouter with image input and low/high/max reasoning levels ([#11592](https://github.com/can1357/oh-my-pi/pull/11592) by [@mazzanfar](https://github.com/mazzanfar)).
 - Added DeepSeek cost estimates that follow published peak/off-peak rates.
 - Added dated, announced price changes to the catalog, so rates switch on their effective date (e.g. DeepSeek Pro moving to Flash rates).
 - Added Command Code as a built-in provider with API-key login, live model discovery, per-model pricing, native OpenAI/Anthropic-compatible routing, cache-aware token usage, and TTFT metrics ([#11391](https://github.com/can1357/oh-my-pi/pull/11391) by [@CherkaSSH](https://github.com/CherkaSSH)).

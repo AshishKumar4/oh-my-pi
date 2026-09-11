@@ -75,7 +75,7 @@ import type {
 	ThinkingBudgets,
 	ToolChoice,
 } from "./types";
-import { getHeaderCaseInsensitive, resolveCacheRetention, resolveModelCacheRetention } from "./utils";
+import { getHeaderCaseInsensitive, resolveCacheRetention } from "./utils";
 import { AssistantMessageEventStream } from "./utils/event-stream";
 import { isFoundryEnabled } from "./utils/foundry";
 import { applyGlyphCodec } from "./utils/glyph-codec";
@@ -1303,7 +1303,7 @@ function createAnthropicCacheRefreshPlan<TApi extends Api>(
 	model: Model<TApi>,
 	context: Context,
 	options: SimpleStreamOptions | undefined,
-	cacheRetention: CacheRetention,
+	cacheRetention: CacheRetention | undefined,
 	payload: MessageCreateParamsStreaming,
 ): AnthropicCacheRefreshPlan {
 	const thinkingEnabled = isAnthropicThinkingActive(model, payload);
@@ -1378,10 +1378,10 @@ function streamSimpleWithAnthropicCacheRefresh<TApi extends Api>(
 	} else if (existingState) {
 		return streamSimpleRequest(model, context, options);
 	}
-	// The keep-warm loop only makes sense for five-minute entries; the resolved
-	// retention is reused by the replay so both requests agree on the TTL.
-	const cacheRetention = resolveModelCacheRetention(model, options.cacheRetention);
-	if (!supportsAnthropicCacheRefresh(model) || cacheRetention !== "short") {
+	// The keep-warm loop only makes sense for five-minute entries. The replay
+	// carries the caller's own value rather than this resolved one, so both
+	// requests derive the same provider default and agree on the TTL.
+	if (!supportsAnthropicCacheRefresh(model) || resolveCacheRetention(options.cacheRetention) !== "short") {
 		return streamSimpleRequest(model, context, options);
 	}
 
@@ -1416,7 +1416,7 @@ function streamSimpleWithAnthropicCacheRefresh<TApi extends Api>(
 			return;
 		}
 		refreshState.arm(
-			createAnthropicCacheRefreshPlan(model, context, options, cacheRetention, capturedPayload),
+			createAnthropicCacheRefreshPlan(model, context, options, options.cacheRetention, capturedPayload),
 			cacheTouchedAtMs,
 		);
 	};
@@ -2022,6 +2022,7 @@ function mapOptionsForApi<TApi extends Api>(
 		acceptEmptyResponse: options?.acceptEmptyResponse,
 		anthropicCacheRefreshRequest: options?.anthropicCacheRefreshRequest,
 		anthropicPrefixMismatchBehavior: options?.anthropicPrefixMismatchBehavior,
+		anthropicCompaction: options?.anthropicCompaction,
 		...simpleProviderOptions,
 	};
 

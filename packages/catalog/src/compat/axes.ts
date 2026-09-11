@@ -194,6 +194,7 @@ export const AXES: Readonly<Record<string, AxisDef>> = {
 	"disable-adaptive-thinking": wire("disableAdaptiveThinking", ["anthropic"]),
 	"disable-strict-tools": wire("disableStrictTools", ["anthropic"]),
 	"escape-builtin-tool-names": wire("escapeBuiltinToolNames", ["anthropic"]),
+	"first-party-provider": wire("firstPartyProvider", ["anthropic"]),
 	"inject-claude-code-instruction": wire("injectClaudeCodeInstruction", ["anthropic"]),
 	"official-endpoint": wire("officialEndpoint", ["anthropic", "openai-responses"]),
 	"replay-unsigned-thinking": wire("replayUnsignedThinking", ["anthropic"]),
@@ -207,6 +208,7 @@ export const AXES: Readonly<Record<string, AxisDef>> = {
 	"supports-mid-conversation-system": wire("supportsMidConversationSystem", ["anthropic"]),
 	"supports-mid-conversation-tool-changes": wire("supportsMidConversationToolChanges", ["anthropic"]),
 	"supports-per-message-effort": wire("supportsPerMessageEffort", ["anthropic"]),
+	"supports-server-compaction": wire("supportsServerCompaction", ["anthropic"]),
 	"supports-thinking-binding-controls": wire("supportsThinkingBindingControls", ["anthropic"]),
 	"supports-turn-scoped-system": wire("supportsTurnScopedSystem", ["anthropic"]),
 
@@ -285,6 +287,11 @@ export const AXES: Readonly<Record<string, AxisDef>> = {
 	"max-context-window": { key: "maxContextWindow", set: "catalog", shape: "scalar" },
 	"requires-cursor-tool-schema-projection": {
 		key: "requiresCursorToolSchemaProjection",
+		set: "catalog",
+		shape: "scalar",
+	},
+	"requires-tool-result-image-hoisting": {
+		key: "requiresToolResultImageHoisting",
 		set: "catalog",
 		shape: "scalar",
 	},

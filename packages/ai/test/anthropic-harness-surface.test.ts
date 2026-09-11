@@ -250,7 +250,7 @@ describe("anthropic OAuth surface without a harness profile", () => {
 	});
 
 	it("still anchors only the identity block", async () => {
-		expect(await cachedSystemSlots(plainModel)).toEqual(["identity:ephemeral"]);
-		expect(await cachedSystemSlots(plainModel, "long")).toEqual(["identity:ephemeral/1h"]);
+		expect(await cachedSystemSlots(plainModel)).toEqual(["identity:ephemeral/1h"]);
+		expect(await cachedSystemSlots(plainModel, "short")).toEqual(["identity:ephemeral"]);
 	});
 });
