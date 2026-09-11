@@ -50,6 +50,7 @@ import type {
 	UsageReport,
 } from "./usage";
 import { resolveUsedFraction } from "./usage";
+import { HOUR_MS } from "./usage/shared";
 import { alibabaTokenPlanRankingStrategy, alibabaTokenPlanUsageProvider } from "./usage/alibaba-token-plan";
 import { claudeRankingStrategy, claudeUsageProvider } from "./usage/claude";
 import { clinePassUsageProvider } from "./usage/cline-pass";
@@ -1342,7 +1343,7 @@ type RankedApiKeyCandidate = UsageRankedCandidate<ApiKeyCredential>;
 export class AuthStorage {
 	static readonly #defaultBackoffMs = 60_000; // Default backoff when no reset time available
 	/** Org-wide OAuth prohibitions need an admin change, so bounded but far longer than a rotate-and-retry. */
-	static readonly #orgDenialBackoffMs = 6 * 60 * 60 * 1000;
+	static readonly #orgDenialBackoffMs = 6 * HOUR_MS;
 
 	/** Provider -> credentials cache, populated from store on reload(). */
 	#data: Map<string, StoredCredential[]> = new Map();
@@ -6902,20 +6903,21 @@ export class AuthStorage {
 				? modelAccountPolicyBlockScope(provider, options?.modelId)
 				: undefined;
 			if (exactModelPolicy && modelPolicyScope === undefined) return false;
+			// An org-wide OAuth prohibition is not tier-scoped: it holds until an
+			// administrator changes it and denies every model. Left to the ranking
+			// strategy it would land under the requested tier (`tier:fable`), so the
+			// credential would stay selectable on every other tier. A content denial
+			// (cyber_policy) is per-request and keeps both the tier scope and the
+			// short rotate-and-retry window.
+			const orgDenial = AIError.isOrgOAuthDenialError(error);
 			const routing = this.#credentialBlockRouting(
 				provider,
 				sessionCredential.type,
 				options?.modelId,
-				modelPolicyScope,
+				orgDenial ? "" : modelPolicyScope,
 			);
-			// A content-triggered denial (cyber_policy) is per-request, so the
-			// credential rotates back in after the short window. An org-wide OAuth
-			// prohibition holds until an administrator changes it, and re-selecting
-			// every minute just spends a 403 per minute on a credential that cannot
-			// serve any model.
 			const blockedUntil =
-				Date.now() +
-				(AIError.isOrgOAuthDenialError(error) ? AuthStorage.#orgDenialBackoffMs : AuthStorage.#defaultBackoffMs);
+				Date.now() + (orgDenial ? AuthStorage.#orgDenialBackoffMs : AuthStorage.#defaultBackoffMs);
 			return this.#blockCredentialForRotation(
 				provider,
 				sessionCredential.type,

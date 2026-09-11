@@ -141,13 +141,27 @@ describe("AuthStorage credential block persistence", () => {
 				'403 {"type":"error","error":{"type":"permission_error","message":"OAuth authentication is currently not allowed for this organization.","details":{"error_code":"oauth_not_allowed_for_organization"}}}',
 			);
 			const before = Date.now();
-			expect(await storage.getApiKey(PROVIDER, "session-org")).toBeDefined();
-			expect(await storage.rotateSessionCredential(PROVIDER, "session-org", { error: orgDenial })).toBe(true);
-			const orgBlock = readCredentialBlockRows(dbPath).find(row => row.blocked_until_ms > before + 60_000);
-			expect(orgBlock).toBeDefined();
+			// The denial arrives on a fable request, whose ranking strategy would
+			// otherwise scope the block to `tier:fable` and leave the credential
+			// selectable on every other Anthropic tier.
+			const denied = await storage.getApiKey(PROVIDER, "session-org", { modelId: "claude-fable-5-1" });
+			expect(denied).toBeDefined();
+			expect(
+				await storage.rotateSessionCredential(PROVIDER, "session-org", {
+					error: orgDenial,
+					modelId: "claude-fable-5-1",
+				}),
+			).toBe(true);
+			const deniedId = store.listAuthCredentials(PROVIDER).find(row => `access-${"org"}` === denied)?.id;
+			const orgRows = readCredentialBlockRows(dbPath);
+			expect(orgRows).toHaveLength(1);
+			const orgBlock = orgRows[0]!;
+			if (deniedId !== undefined) expect(orgBlock.credential_id).toBe(deniedId);
+			// Provider-wide, not tier-scoped: an org prohibition denies every model.
+			expect(orgBlock.block_scope).toBe("");
 			// Bounded so an administrator lifting the org policy self-heals.
-			expect(orgBlock?.blocked_until_ms).toBeGreaterThan(before + 60 * 60 * 1000);
-			expect(orgBlock?.blocked_until_ms).toBeLessThanOrEqual(before + 24 * 60 * 60 * 1000);
+			expect(orgBlock.blocked_until_ms).toBeGreaterThan(before + 60 * 60 * 1000);
+			expect(orgBlock.blocked_until_ms).toBeLessThanOrEqual(before + 24 * 60 * 60 * 1000);
 		} finally {
 			storage.close();
 		}
@@ -167,7 +181,9 @@ describe("AuthStorage credential block persistence", () => {
 				true,
 			);
 			// A flagged prompt must not sideline a healthy account for hours.
-			for (const row of readCredentialBlockRows(path.join(tempDir, "content.db"))) {
+			const contentRows = readCredentialBlockRows(path.join(tempDir, "content.db"));
+			expect(contentRows.length).toBeGreaterThan(0);
+			for (const row of contentRows) {
 				expect(row.blocked_until_ms).toBeLessThanOrEqual(before + 5 * 60 * 1000);
 			}
 		} finally {
