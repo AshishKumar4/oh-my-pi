@@ -22,6 +22,11 @@ import { settings } from "../../../config/settings";
 import type { AgentSession } from "../../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../../session/auth-storage";
 import { limitMatchesActiveAccount } from "../../../slash-commands/helpers/active-oauth-account";
+import {
+	formatPromptCacheHealth,
+	promptCacheHealth,
+	promptCacheSamplesFromMessages,
+} from "../../../session/prompt-cache-stats";
 import { type ActiveRepoContext, resolveActiveRepoContextSync } from "../../../utils/active-repo-context";
 import { withTimeoutSignal } from "../../../utils/fetch-timeout";
 import { GH_COMMAND_TIMEOUT_MS, github } from "../../../utils/github";
@@ -2264,16 +2269,50 @@ export class StatusLineComponent implements Component {
 			return leftGroup + (leftGroup && rightGroup ? " " : "") + rightGroup;
 		}
 
-		const gapWidth = Math.max(1, topFillWidth - leftWidth - rightWidth);
+		const cacheHealth = this.#promptCacheHealthChunk(ctx, topFillWidth, leftWidth, rightWidth, embedContext);
+		const gapWidth = Math.max(1, topFillWidth - leftWidth - rightWidth - cacheHealth.width);
 		if (plain) {
 			// Standalone composers: no gauge line between the groups, just air.
-			return leftGroup + padding(gapWidth) + rightGroup;
+			return leftGroup + padding(gapWidth) + cacheHealth.text + rightGroup;
 		}
 		// Box layout: with one group absent (an unnamed session hides
 		// `session_name`, emptying the default preset's right group) the gauge
 		// runs to the border edge instead of disappearing, so embedded context
 		// labels don't fall back to a context chip until the session is titled.
-		return leftGroup + this.#buildContextGaugeFill(gapWidth, ctx, effectiveSettings, embedContext) + rightGroup;
+		return (
+			leftGroup +
+			this.#buildContextGaugeFill(gapWidth, ctx, effectiveSettings, embedContext) +
+			cacheHealth.text +
+			rightGroup
+		);
+	}
+
+	// Prompt-cache health readout pinned to the gauge's right end, between the
+	// bar and the right group. Yields its width to the bar first: full, then
+	// compact, then nothing, always leaving the embedded context labels intact.
+	#promptCacheHealthChunk(
+		ctx: SegmentContext,
+		topFillWidth: number,
+		leftWidth: number,
+		rightWidth: number,
+		embedContext: boolean,
+	): { text: string; width: number } {
+		const empty = { text: "", width: 0 };
+		if (ctx.startupPlaceholder) return empty;
+		const messages = ctx.session.messages ?? [];
+		const health = promptCacheHealth(promptCacheSamplesFromMessages(messages));
+		if (!health) return empty;
+		const body = formatPromptCacheHealth(health);
+		const candidates = body.kind === "ready" ? [body.full, body.compact] : [body.body];
+		const minGauge = embedContext ? embeddedContextGaugeMinWidth(ctx.contextPercent ?? 0, ctx.contextWindow) : 1;
+		const available = topFillWidth - leftWidth - rightWidth;
+		for (const candidate of candidates) {
+			const parts = [theme.icon.cache, theme.fg("statusLineSpend", candidate)].filter(part => part !== "");
+			const text = ` ${parts.join(" ")}`;
+			const width = visibleWidth(text);
+			if (available - width >= minGauge) return { text, width };
+		}
+		return empty;
 	}
 
 	/**
