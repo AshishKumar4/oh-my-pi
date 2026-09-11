@@ -1264,6 +1264,111 @@ describe("agentLoop with AgentMessage", () => {
 		expect(result?.content).toContainEqual({ type: "text", text: "delivered" });
 	});
 
+	it("emits persistAs event args in the target shape while persisting the wire shape", async () => {
+		const hubSchema = type({ op: "'send'", to: "string", message: "string" });
+		const facadeSchema = type({ to: "string", message: "string" });
+		const hub: AgentTool<typeof hubSchema> = {
+			name: "hub",
+			label: "Hub",
+			description: "hub",
+			parameters: hubSchema,
+			async execute() {
+				return { content: [{ type: "text", text: "delivered" }] };
+			},
+		};
+		const facade: AgentTool<typeof facadeSchema> = {
+			name: "SendMessage",
+			persistAs: "hub",
+			label: "Hub",
+			description: "send",
+			parameters: facadeSchema,
+			toEventArgs: args => ({ op: "send", ...args }),
+			execute: (id, params, signal, onUpdate, ctx) =>
+				hub.execute(id, { op: "send", ...params }, signal, onUpdate, ctx),
+		};
+		const context: AgentContext = { systemPrompt: [""], messages: [], tools: [hub, facade] };
+		const mock = createMockModel({
+			responses: [
+				{
+					content: [
+						{ type: "toolCall", id: "tool-1", name: "SendMessage", arguments: { to: "Main", message: "hi" } },
+					],
+				},
+				{ content: ["done"] },
+			],
+		});
+		const config: AgentLoopConfig = { model: mock.model, convertToLlm: identityConverter };
+
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([createUserMessage("ping main")], context, config, undefined, mock.stream);
+		for await (const event of stream) {
+			events.push(event);
+		}
+		const messages = await stream.result();
+
+		const start = events.find(event => event.type === "tool_execution_start");
+		expect(start?.type === "tool_execution_start" ? [start.toolName, start.args] : undefined).toEqual([
+			"hub",
+			{ op: "send", to: "Main", message: "hi" },
+		]);
+		const assistant = messages[1] as AssistantMessage;
+		const call = assistant.content.find(block => block.type === "toolCall");
+		expect(call).toMatchObject({ name: "hub", wireName: "SendMessage", arguments: { to: "Main", message: "hi" } });
+	});
+
+	it("falls back to the raw args when a persistAs event projection throws", async () => {
+		const hubSchema = type({ op: "'send'", to: "string", message: "string" });
+		const facadeSchema = type({ to: "string", message: "string" });
+		const hub: AgentTool<typeof hubSchema> = {
+			name: "hub",
+			label: "Hub",
+			description: "hub",
+			parameters: hubSchema,
+			async execute() {
+				return { content: [{ type: "text", text: "delivered" }] };
+			},
+		};
+		const facade: AgentTool<typeof facadeSchema> = {
+			name: "SendMessage",
+			persistAs: "hub",
+			label: "Hub",
+			description: "send",
+			parameters: facadeSchema,
+			toEventArgs: () => {
+				throw new Error("no native shape for this payload");
+			},
+			execute: (id, params, signal, onUpdate, ctx) =>
+				hub.execute(id, { op: "send", ...params }, signal, onUpdate, ctx),
+		};
+		const context: AgentContext = { systemPrompt: [""], messages: [], tools: [hub, facade] };
+		const mock = createMockModel({
+			responses: [
+				{
+					content: [
+						{ type: "toolCall", id: "tool-1", name: "SendMessage", arguments: { to: "Main", message: "hi" } },
+					],
+				},
+				{ content: ["done"] },
+			],
+		});
+		const config: AgentLoopConfig = { model: mock.model, convertToLlm: identityConverter };
+
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([createUserMessage("ping main")], context, config, undefined, mock.stream);
+		for await (const event of stream) {
+			events.push(event);
+		}
+		const messages = await stream.result();
+
+		const start = events.find(event => event.type === "tool_execution_start");
+		expect(start?.type === "tool_execution_start" ? start.args : undefined).toEqual({
+			to: "Main",
+			message: "hi",
+		});
+		const result = messages.find((m): m is ToolResultMessage => m.role === "toolResult");
+		expect(result?.isError).toBeFalsy();
+	});
+
 	it("suggests the intended tool when a miss shares its trailing segment", async () => {
 		const toolSchema = type({ path: "string" });
 		const makeTool = (name: string): AgentTool<typeof toolSchema, { path: string }> => ({

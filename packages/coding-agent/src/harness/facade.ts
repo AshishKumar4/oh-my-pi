@@ -27,10 +27,17 @@ function withPolicyKey(decision: ToolApprovalDecision | undefined, policyKey: st
 function mapPredicate<T>(
 	value: T | ((args: never) => T) | undefined,
 	toParams: (args: unknown) => unknown,
+	fallback: T,
 ): T | ((args: unknown) => T) | undefined {
 	if (typeof value !== "function") return value;
 	const fn = value as (args: unknown) => T;
-	return (args: unknown) => fn(toParams(args));
+	return (args: unknown) => {
+		try {
+			return fn(toParams(args));
+		} catch {
+			return fallback;
+		}
+	};
 }
 
 export function harnessFacade(target: AgentTool, spec: HarnessFacadeSpec, host: HarnessFacadeHost): AgentTool {
@@ -39,22 +46,36 @@ export function harnessFacade(target: AgentTool, spec: HarnessFacadeSpec, host: 
 	return {
 		name: spec.wireName,
 		persistAs: target.name,
+		toEventArgs: toParams,
 		label: target.label,
 		description: spec.description,
 		parameters: spec.parameters,
 		loadMode: "essential",
 		...(spec.namespace ? { namespace: spec.namespace } : {}),
 		...(spec.intent ? { intent: spec.intent as AgentTool["intent"] } : {}),
-		approval: (args: unknown): ToolApprovalDecision =>
-			withPolicyKey(typeof approval === "function" ? approval(toParams(args)) : approval, target.name),
+		approval: (args: unknown): ToolApprovalDecision => {
+			try {
+				return withPolicyKey(typeof approval === "function" ? approval(toParams(args)) : approval, target.name);
+			} catch {
+				return { tier: "exec", policyKey: target.name };
+			}
+		},
 		...(target.formatApprovalDetails
-			? { formatApprovalDetails: (args: unknown) => target.formatApprovalDetails?.(toParams(args)) }
+			? {
+					formatApprovalDetails: (args: unknown) => {
+						try {
+							return target.formatApprovalDetails?.(toParams(args));
+						} catch {
+							return undefined;
+						}
+					},
+				}
 			: {}),
 		...(target.concurrency !== undefined
-			? { concurrency: mapPredicate(target.concurrency, toParams) as AgentTool["concurrency"] }
+			? { concurrency: mapPredicate(target.concurrency, toParams, "exclusive") as AgentTool["concurrency"] }
 			: {}),
 		...(target.interruptible !== undefined
-			? { interruptible: mapPredicate(target.interruptible, toParams) as AgentTool["interruptible"] }
+			? { interruptible: mapPredicate(target.interruptible, toParams, false) as AgentTool["interruptible"] }
 			: {}),
 		execute: (toolCallId, args, signal, onUpdate, context) =>
 			target.execute(toolCallId, toParams(args) as never, signal, onUpdate, context),
