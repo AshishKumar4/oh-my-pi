@@ -16,7 +16,7 @@ import * as evalIndex from "@oh-my-pi/pi-coding-agent/eval";
 import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { resolveApproval } from "@oh-my-pi/pi-coding-agent/tools/approval";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { EvalTool } from "@oh-my-pi/pi-coding-agent/tools/eval";
 import { HubTool } from "@oh-my-pi/pi-coding-agent/tools/hub";
@@ -698,5 +698,48 @@ describe("claude-code Skill facade", () => {
 		});
 		expect(withArgs.result.isError).toBe(true);
 		expect(withArgs.result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("Skill.args") });
+	});
+});
+
+describe("facade predicates stay total on unsupported vendor fields", () => {
+	function policyTarget(): AgentTool {
+		return stubTool("hub", {
+			approval: (params: unknown) =>
+				typeof params === "object" && params !== null && "op" in params ? "read" : "exec",
+			formatApprovalDetails: () => "hub details",
+			concurrency: () => "shared",
+			interruptible: () => true,
+		});
+	}
+
+	it("maps an unconvertible payload to the safest decision instead of throwing", () => {
+		const facade = facadeFor("claude-code", "SendMessage", policyTarget());
+		const hostile = { to: "Main", message: "hi", notify_when_idle: true };
+		const approval = facade.approval;
+		expect(typeof approval === "function" ? approval(hostile) : approval).toEqual({
+			tier: "exec",
+			policyKey: "hub",
+		});
+		expect(resolveApproval(facade, hostile, "write", {})).toMatchObject({ policy: "prompt" });
+		expect(facade.formatApprovalDetails?.(hostile)).toBeUndefined();
+		const concurrency = facade.concurrency;
+		expect(typeof concurrency === "function" ? concurrency(hostile) : concurrency).toBe("exclusive");
+		const interruptible = facade.interruptible;
+		expect(typeof interruptible === "function" ? interruptible(hostile) : interruptible).toBe(false);
+	});
+
+	it("keeps the target tool's real policy for convertible payloads", () => {
+		const facade = facadeFor("claude-code", "SendMessage", policyTarget());
+		const convertible = { to: "Main", message: "hi" };
+		const approval = facade.approval;
+		expect(typeof approval === "function" ? approval(convertible) : approval).toEqual({
+			tier: "read",
+			policyKey: "hub",
+		});
+		expect(facade.formatApprovalDetails?.(convertible)).toBe("hub details");
+		const concurrency = facade.concurrency;
+		expect(typeof concurrency === "function" ? concurrency(convertible) : concurrency).toBe("shared");
+		const interruptible = facade.interruptible;
+		expect(typeof interruptible === "function" ? interruptible(convertible) : interruptible).toBe(true);
 	});
 });
