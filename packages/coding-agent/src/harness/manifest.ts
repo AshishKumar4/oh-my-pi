@@ -29,8 +29,11 @@ const MANIFESTS: Readonly<Record<HarnessProfile, Readonly<Record<string, Harness
 	codex: CODEX_BINDINGS,
 };
 
-export function harnessToolBinding(profile: HarnessProfile, toolName: string): HarnessToolBinding | undefined {
-	return MANIFESTS[profile][toolName];
+export function harnessToolBinding(
+	profile: HarnessProfile | undefined,
+	toolName: string,
+): HarnessToolBinding | undefined {
+	return profile === undefined ? undefined : MANIFESTS[profile][toolName];
 }
 
 function collectNamespacedTools(
