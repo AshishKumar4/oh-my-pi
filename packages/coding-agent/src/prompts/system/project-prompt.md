@@ -1,6 +1,6 @@
-PROJECT
+{{#unless vendorPrompt}}PROJECT
 
-<workstation>
+{{/unless}}<workstation>
 {{#list environment prefix="- " join="\n"}}{{label}}: {{value}}{{/list}}
 {{#if model}}- Model: {{model}}{{/if}}
 </workstation>
@@ -48,11 +48,13 @@ Additional workspace directories. This CURRENT workspace state supersedes worksp
 </workspace-roots>
 {{/if}}
 
+{{#unless vendorPrompt}}
 <critical>
 - Each response MUST advance the task; completion only stopping condition.
 - MUST default to informed action; do not ask for confirmation when tools or repo context can answer.
 - Before yielding, MUST verify significant behavioral changes: run the specific test, command, or scenario covering the change.
 </critical>
+{{/unless}}
 
 {{#if appendPrompt}}
 {{appendPrompt}}

@@ -30,17 +30,37 @@ class PresentedTool implements AgentTool {
 	declare readonly execute: AgentTool["execute"];
 	declare readonly customWireName?: string;
 	declare readonly namespace?: ToolNamespace;
+	declare readonly examples?: AgentTool["examples"];
 
-	constructor(tool: AgentTool, binding: HarnessToolBinding) {
-		if (binding.wireName !== undefined) this.customWireName = binding.wireName;
-		if (binding.namespace !== undefined) this.namespace = { name: binding.namespace };
+	constructor(tool: AgentTool, binding: HarnessToolBinding | undefined, vendorDescription: VendorDescription) {
+		if (binding?.wireName !== undefined) this.customWireName = binding.wireName;
+		if (binding?.namespace !== undefined) this.namespace = { name: binding.namespace };
+		// Tools are presented when they mount, before the capture has loaded, so
+		// the vendor's words are read at request time rather than pinned here.
+		// omp's `examples` render into the wire description too, and the vendor
+		// client sends none.
+		Object.defineProperty(this, "description", {
+			enumerable: true,
+			get: () => vendorDescription() ?? tool.description,
+		});
+		Object.defineProperty(this, "examples", {
+			enumerable: true,
+			get: () => (vendorDescription() === undefined ? tool.examples : undefined),
+		});
 		applyToolProxy(tool, this);
 	}
 }
 
-/** The tool itself when the profile leaves it alone; a projected copy when the manifest renames or groups it. */
-export function presentTool(tool: AgentTool, binding: HarnessToolBinding | undefined): AgentTool {
-	return binding === undefined ? tool : new PresentedTool(tool, binding);
+/** The vendor's description for the wire name a tool presents under, once a capture is served. */
+export type VendorDescription = () => string | undefined;
+
+/** `tool` as a profile presents it: the manifest's wire identity plus the vendor's description. */
+export function presentTool(
+	tool: AgentTool,
+	binding: HarnessToolBinding | undefined,
+	vendorDescription: VendorDescription,
+): AgentTool {
+	return new PresentedTool(tool, binding, vendorDescription);
 }
 
 export interface HarnessFacadeSpec<TWire extends TSchema = TSchema, TParams = unknown> {
@@ -76,7 +96,12 @@ function mapPredicate<T>(
 	};
 }
 
-export function harnessFacade(target: AgentTool, spec: HarnessFacadeSpec, host: HarnessFacadeHost): AgentTool {
+export function harnessFacade(
+	target: AgentTool,
+	spec: HarnessFacadeSpec,
+	host: HarnessFacadeHost,
+	vendorDescription: VendorDescription = () => undefined,
+): AgentTool {
 	const toParams = (args: unknown): unknown => nativeParams(spec.toParams(args as never, host) as object);
 	const approval = target.approval;
 	return {
@@ -84,7 +109,9 @@ export function harnessFacade(target: AgentTool, spec: HarnessFacadeSpec, host: 
 		persistAs: target.name,
 		toNativeArgs: toParams,
 		label: target.label,
-		description: spec.description,
+		get description() {
+			return vendorDescription() ?? spec.description;
+		},
 		parameters: spec.parameters,
 		loadMode: "essential",
 		...(spec.namespace ? { namespace: spec.namespace } : {}),

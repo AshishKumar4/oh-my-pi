@@ -179,16 +179,23 @@ PY
 # `claude -p` is NOT usable here: print mode routes through the Agent SDK and
 # reports `cc_entrypoint=sdk-cli`, which the recorder rejects on purpose. Only
 # the interactive TUI sends the `cli` entrypoint omp serves, so drive a PTY.
+# One recording per model: the vendor prompt names the model it runs on, so a
+# Fable recording replayed to Opus would assert the wrong identity.
+CLAUDE_MODELS="${OMP_HARNESS_CLAUDE_MODELS:-claude-fable-5-1 claude-opus-5}"
+
 drive_claude_tui() {
-	python3 - "$WORK_DIR" "$GATEWAY_PORT" <<'PY'
+	python3 - "$WORK_DIR" "$GATEWAY_PORT" "$1" <<'PY'
 import os, pty, select, sys, time
 
-work_dir, port = sys.argv[1], sys.argv[2]
+work_dir, port, model = sys.argv[1], sys.argv[2], sys.argv[3]
 pid, fd = pty.fork()
 if pid == 0:
     os.chdir(work_dir)
     os.environ["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{port}"
-    os.execvp("claude", ["claude"])
+    try:
+        os.execvp("claude", ["claude", "--model", model])
+    finally:
+        os._exit(1)
 
 
 def drain(seconds):
@@ -232,7 +239,10 @@ if command -v claude >/dev/null; then
 	trust_scratch_dir
 	# The capture is written from the INBOUND request, before omp calls Anthropic,
 	# so a rate-limited or out-of-quota account still produces a valid capture.
-	drive_claude_tui || true
+	for model in $CLAUDE_MODELS; do
+		say "  model $model"
+		drive_claude_tui "$model" || true
+	done
 	restore_claude_config
 fi
 

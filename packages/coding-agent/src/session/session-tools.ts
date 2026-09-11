@@ -15,6 +15,7 @@ import type { ExtensionRunner, SourceInfo, ToolInfo } from "../extensibility/ext
 import { ExtensionToolWrapper } from "../extensibility/extensions/wrapper";
 import { loadSkills, type Skill, type SkillWarning, setActiveSkills } from "../extensibility/skills";
 import { harnessFacade, presentedWireName, presentTool } from "../harness/facade";
+import { servedHarnessPrompt } from "../harness/capture";
 import { harnessFacadeSpecs } from "../harness/facades";
 import { harnessToolBinding } from "../harness/manifest";
 import { type LocalProtocolOptions, stripXdUrlPrefix, XD_URL_PREFIX } from "../internal-urls";
@@ -315,9 +316,7 @@ export class SessionTools {
 		// start; facades join at the first applied selection.
 		const profile = this.#harnessProfile();
 		if (profile !== undefined) {
-			host.agent.setTools(
-				host.agent.state.tools.map(tool => presentTool(tool, harnessToolBinding(profile, tool.name))),
-			);
+			host.agent.setTools(host.agent.state.tools.map(tool => this.#present(tool, profile)));
 		}
 	}
 
@@ -392,7 +391,7 @@ export class SessionTools {
 		const activeTools = this.getActiveToolNames()
 			.map(name => this.#toolRegistry.get(name))
 			.filter((tool): tool is AgentTool => tool !== undefined)
-			.map(tool => this.#wrapToolForAcpPermission(presentTool(tool, harnessToolBinding(profile, tool.name))));
+			.map(tool => this.#wrapToolForAcpPermission(profile === undefined ? tool : this.#present(tool, profile)));
 		this.#host.agent.setTools(this.#presentTools(activeTools, this.getEnabledToolNames(), profile));
 	}
 
@@ -740,10 +739,20 @@ export class SessionTools {
 	#presentedRegistry(profile: HarnessProfile | undefined): Map<string, AgentTool> {
 		if (profile === undefined) return this.#toolRegistry;
 		const presented = new Map<string, AgentTool>();
-		for (const [name, tool] of this.#toolRegistry) {
-			presented.set(name, presentTool(tool, harnessToolBinding(profile, name)));
-		}
+		for (const [name, tool] of this.#toolRegistry) presented.set(name, this.#present(tool, profile));
 		return presented;
+	}
+
+	/** `tool` as `profile` presents it: the manifest's wire identity plus the served capture's description. */
+	#present(tool: AgentTool, profile: HarnessProfile): AgentTool {
+		const binding = harnessToolBinding(profile, tool.name);
+		return presentTool(tool, binding, () => this.#vendorDescription(presentedWireName(tool, binding)));
+	}
+
+	/** The served capture's description for `wireName`, once the capture for the active model has loaded. */
+	#vendorDescription(wireName: string | undefined): string | undefined {
+		if (wireName === undefined) return undefined;
+		return servedHarnessPrompt(this.#host.model())?.descriptions[wireName];
 	}
 
 	/** Appends `profile`'s facades to an already-presented tool list, replacing the targets they stand in for. */
@@ -760,7 +769,12 @@ export class SessionTools {
 			if (!enabledToolNames.includes(spec.target)) continue;
 			const target = this.#toolRegistry.get(spec.target);
 			if (!target) continue;
-			const facade = harnessFacade(this.#wrapToolForAcpPermission(target), spec, { settings: this.#host.settings });
+			const facade = harnessFacade(
+				this.#wrapToolForAcpPermission(target),
+				spec,
+				{ settings: this.#host.settings },
+				() => this.#vendorDescription(spec.wireName),
+			);
 			this.#mountedFacades.set(facade.name, facade);
 			facades.push(facade);
 			if (spec.replacesTarget) replaced.add(spec.target);

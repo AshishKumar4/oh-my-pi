@@ -17,7 +17,7 @@ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { harnessFacade } from "@oh-my-pi/pi-coding-agent/harness/facade";
+import { harnessFacade, presentTool } from "@oh-my-pi/pi-coding-agent/harness/facade";
 import { harnessFacadeSpecs } from "@oh-my-pi/pi-coding-agent/harness/facades";
 import * as evalIndex from "@oh-my-pi/pi-coding-agent/eval";
 import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
@@ -272,6 +272,30 @@ afterEach(async () => {
 	for (const manager of managers.splice(0)) await manager.dispose({ timeoutMs: 200 });
 	for (const session of sessions.splice(0)) await session.dispose();
 	vi.restoreAllMocks();
+});
+
+describe("vendor descriptions under a profile", () => {
+	it("presents the served capture's words for bound tools and facades, read at request time", () => {
+		const served: { text?: string } = {};
+		const read = stubTool("read", { examples: [{ caption: "omp example" }] });
+		const presented = presentTool(read, { wireName: "Read" }, () => served.text);
+		const spec = harnessFacadeSpecs("claude-code").find(entry => entry.wireName === "SendMessage");
+		if (!spec) throw new Error("no SendMessage facade");
+		const facade = harnessFacade(stubTool("hub"), spec, { settings: Settings.isolated() }, () => served.text);
+
+		// Tools are presented before the capture loads: omp's own surface until then.
+		expect(presented.description).toBe("read");
+		expect(presented.examples).toEqual([{ caption: "omp example" }]);
+		expect(facade.description).toBe(spec.description);
+
+		served.text = "Reads a file from the local filesystem.";
+		expect(presented.description).toBe(served.text);
+		expect(presented.customWireName).toBe("Read");
+		expect(facade.description).toBe(served.text);
+		// The agent loop spreads own keys into the request copy; omp's examples
+		// would otherwise render into the vendor text.
+		expect({ ...presented }.examples).toBeUndefined();
+	});
 });
 
 describe("claude-code SendMessage facade", () => {

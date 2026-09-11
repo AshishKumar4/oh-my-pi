@@ -254,9 +254,18 @@ describe("harness capture recorder", () => {
 	it("persists a Claude Code cli turn as a capture the reader then serves verbatim", async () => {
 		await recordTurn("/v1/messages", claudeCodeBody(claudeCodeEntrypoint, false), ANTHROPIC_HEADERS);
 
-		expect(await profileFiles("claude-code")).toEqual([`${CLIENT_VERSION}-${claudeCodeEntrypoint}.json`]);
-		const capture = await readCapture("claude-code", `${CLIENT_VERSION}-${claudeCodeEntrypoint}.json`);
+		expect(await profileFiles("claude-code")).toEqual([
+			`${CLIENT_VERSION}-${claudeCodeEntrypoint}-claude-sonnet-5.json`,
+		]);
+		const capture = await readCapture(
+			"claude-code",
+			`${CLIENT_VERSION}-${claudeCodeEntrypoint}-claude-sonnet-5.json`,
+		);
 		expect(isRecord(capture) ? capture.tools : undefined).toEqual(["Bash", "Read"]);
+		expect(isRecord(capture) ? capture.declarations : undefined).toEqual([
+			{ name: "Bash", description: "Run a shell command", input_schema: { type: "object", properties: {} } },
+			{ name: "Read", description: "Read a file", input_schema: { type: "object", properties: {} } },
+		]);
 		expect(isRecord(capture) ? capture.instructions : undefined).toEqual([
 			`${claudeCodeBillingHeaderPrefix} cc_version=${CLIENT_VERSION}; cc_entrypoint=${claudeCodeEntrypoint};`,
 			claudeCodeSystemInstruction,
@@ -273,7 +282,11 @@ describe("harness capture recorder", () => {
 	it.skipIf(process.platform === "win32")("writes the capture owner-only", async () => {
 		await recordTurn("/v1/messages", claudeCodeBody(claudeCodeEntrypoint, false), ANTHROPIC_HEADERS);
 
-		const file = path.join(dirs.cache, "claude-code", `${CLIENT_VERSION}-${claudeCodeEntrypoint}.json`);
+		const file = path.join(
+			dirs.cache,
+			"claude-code",
+			`${CLIENT_VERSION}-${claudeCodeEntrypoint}-claude-sonnet-5.json`,
+		);
 		const mode = (await fs.stat(file)).mode & 0o777;
 		expect(mode.toString(8)).toBe("600");
 	});
@@ -357,7 +370,10 @@ describe("harness capture recorder", () => {
 	it("persists no user-side text when no recorded block carries any", async () => {
 		await recordTurn("/v1/messages", claudeCodeBody(claudeCodeEntrypoint, false), ANTHROPIC_HEADERS);
 
-		const capture = await readCapture("claude-code", `${CLIENT_VERSION}-${claudeCodeEntrypoint}.json`);
+		const capture = await readCapture(
+			"claude-code",
+			`${CLIENT_VERSION}-${claudeCodeEntrypoint}-claude-sonnet-5.json`,
+		);
 		expect(isRecord(capture) ? capture.ambient : undefined).toEqual([]);
 		const stored = JSON.stringify(capture);
 		expect(stored).not.toContain("vault://prod");
@@ -382,7 +398,10 @@ describe("harness capture recorder", () => {
 
 		await recordTurn("/v1/messages", folded, ANTHROPIC_HEADERS);
 
-		const capture = await readCapture("claude-code", `${CLIENT_VERSION}-${claudeCodeEntrypoint}.json`);
+		const capture = await readCapture(
+			"claude-code",
+			`${CLIENT_VERSION}-${claudeCodeEntrypoint}-claude-sonnet-5.json`,
+		);
 		expect(isRecord(capture) ? capture.ambient : undefined).toEqual([AMBIENT_CLAUDE_MD]);
 
 		const served = await servedPrompt("claude-code");
@@ -391,7 +410,7 @@ describe("harness capture recorder", () => {
 	});
 
 	it("refreshes the capture when the same client identity re-records with a newer timestamp", async () => {
-		await seedCapture(`${CLIENT_VERSION}-${claudeCodeEntrypoint}.json`, "2020-01-01T00:00:00.000Z");
+		await seedCapture(`${CLIENT_VERSION}-${claudeCodeEntrypoint}-claude-sonnet-5.json`, "2020-01-01T00:00:00.000Z");
 		const gateway = await bootGateway({ record: true });
 		const delegated = {
 			...claudeCodeBody(claudeCodeEntrypoint, false),
@@ -407,13 +426,15 @@ describe("harness capture recorder", () => {
 
 		const second = await post(gateway, "/v1/messages", delegated, ANTHROPIC_HEADERS);
 
-		expect(await profileFiles("claude-code")).toEqual([`${CLIENT_VERSION}-${claudeCodeEntrypoint}.json`]);
+		expect(await profileFiles("claude-code")).toEqual([
+			`${CLIENT_VERSION}-${claudeCodeEntrypoint}-claude-sonnet-5.json`,
+		]);
 		expect((await servedPrompt("claude-code"))?.text).toBe(SUBAGENT_PROMPT_BLOCK);
 		expect(second.status).toBe(200);
 	});
 
 	it("keeps the recorded capture when a re-record arrives with an older timestamp", async () => {
-		await seedCapture(`${CLIENT_VERSION}-${claudeCodeEntrypoint}.json`, "2999-01-01T00:00:00.000Z");
+		await seedCapture(`${CLIENT_VERSION}-${claudeCodeEntrypoint}-claude-sonnet-5.json`, "2999-01-01T00:00:00.000Z");
 		const gateway = await bootGateway({ record: true });
 		const delegated = {
 			...claudeCodeBody(claudeCodeEntrypoint, false),
@@ -429,18 +450,23 @@ describe("harness capture recorder", () => {
 
 		await post(gateway, "/v1/messages", delegated, ANTHROPIC_HEADERS);
 
-		const capture = await readCapture("claude-code", `${CLIENT_VERSION}-${claudeCodeEntrypoint}.json`);
+		const capture = await readCapture(
+			"claude-code",
+			`${CLIENT_VERSION}-${claudeCodeEntrypoint}-claude-sonnet-5.json`,
+		);
 		expect(isRecord(capture) ? capture.capturedAt : undefined).toBe("2999-01-01T00:00:00.000Z");
 		expect((await servedPrompt("claude-code"))?.text).toBe(HARNESS_PROMPT_BLOCK);
 	});
 
 	it("never lets a request the capture contract rejects replace a valid capture", async () => {
-		await seedCapture(`${CLIENT_VERSION}-${claudeCodeEntrypoint}.json`, "2020-01-01T00:00:00.000Z");
-		const before = await readCapture("claude-code", `${CLIENT_VERSION}-${claudeCodeEntrypoint}.json`);
+		await seedCapture(`${CLIENT_VERSION}-${claudeCodeEntrypoint}-claude-sonnet-5.json`, "2020-01-01T00:00:00.000Z");
+		const before = await readCapture("claude-code", `${CLIENT_VERSION}-${claudeCodeEntrypoint}-claude-sonnet-5.json`);
 
 		await recordTurn("/v1/messages", claudeCodeBody("sdk-cli", false), ANTHROPIC_HEADERS);
 
-		expect(await readCapture("claude-code", `${CLIENT_VERSION}-${claudeCodeEntrypoint}.json`)).toEqual(before);
+		expect(
+			await readCapture("claude-code", `${CLIENT_VERSION}-${claudeCodeEntrypoint}-claude-sonnet-5.json`),
+		).toEqual(before);
 		expect((await servedPrompt("claude-code"))?.text).toBe(HARNESS_PROMPT_BLOCK);
 	});
 
@@ -450,7 +476,9 @@ describe("harness capture recorder", () => {
 		const body = claudeCodeBody(claudeCodeEntrypoint, false);
 
 		const withRecord = await post(recording, "/v1/messages", body, ANTHROPIC_HEADERS);
-		expect(await profileFiles("claude-code")).toEqual([`${CLIENT_VERSION}-${claudeCodeEntrypoint}.json`]);
+		expect(await profileFiles("claude-code")).toEqual([
+			`${CLIENT_VERSION}-${claudeCodeEntrypoint}-claude-sonnet-5.json`,
+		]);
 		await fs.rm(dirs.cache, { recursive: true, force: true });
 
 		const withoutRecord = await post(plain, "/v1/messages", body, ANTHROPIC_HEADERS);

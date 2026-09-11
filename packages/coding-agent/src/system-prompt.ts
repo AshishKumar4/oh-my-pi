@@ -802,7 +802,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	const harnessPromptPromise: Promise<HarnessPrompt | null> =
 		harnessProfile === undefined || callerControlsCustomPrompt
 			? Promise.resolve(null)
-			: logger.time("loadHarnessPrompt", loadHarnessPrompt, harnessProfile);
+			: logger.time("loadHarnessPrompt", loadHarnessPrompt, harnessProfile, model);
 	const contextFilesPromise = (async () => {
 		const primary = providedContextFiles
 			? providedContextFiles
@@ -1042,6 +1042,9 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		xdevDocs,
 		autoQaEnabled,
 		writeTransportOnly,
+		// A served vendor prompt carries its own operating directives; the footer
+		// then keeps environment facts only.
+		vendorPrompt: harnessPromptText !== undefined,
 	};
 	const usesCustomTemplate = Boolean(resolvedCustomPrompt) || harnessPromptText !== undefined;
 	const rendered = prompt.render(usesCustomTemplate ? customSystemPromptTemplate : systemPromptTemplate, data);

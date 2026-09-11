@@ -25,10 +25,32 @@ interface Derivation {
 	readonly profile: HarnessProfile;
 	readonly clientVersion: string;
 	readonly entrypoint: string;
+	/** The model the recording ran on; the vendor prompt names it, so replay is per-model. */
+	readonly model?: string;
 	readonly instructions: string[];
 	readonly tools: string[];
+	readonly declarations: ToolDeclaration[];
 	readonly ambient: string[];
 	readonly fallback?: CaptureFallback;
+}
+
+type ToolDeclaration = NonNullable<HarnessCapture["declarations"]>[number];
+
+/**
+ * Every tool declaration in `declarations`, flattening codex namespace groups
+ * (`{ name, tools: [...] }`) to their leaves. Anthropic declares `input_schema`,
+ * codex `parameters`; both are kept under one key so the reader has one shape.
+ */
+function toolDeclarations(declarations: readonly unknown[]): ToolDeclaration[] {
+	return declarations.flatMap(declaration => {
+		const nested = arrayField(declaration, "tools");
+		if (nested !== undefined) return toolDeclarations(nested);
+		const name = stringField(declaration, "name");
+		if (name === undefined) return [];
+		const description = stringField(declaration, "description") ?? "";
+		const schema = isRecord(declaration) ? (declaration.input_schema ?? declaration.parameters) : undefined;
+		return [{ name, description, ...(schema === undefined ? {} : { input_schema: schema }) }];
+	});
 }
 
 function stringField(node: unknown, key: string): string | undefined {
@@ -81,23 +103,22 @@ function deriveClaudeCode(body: unknown): Derivation | undefined {
 	const ambient = (arrayField(body, "messages") ?? [])
 		.filter(message => stringField(message, "role") !== "assistant")
 		.flatMap(textParts);
+	const model = stringField(body, "model");
 	return {
 		profile: "claude-code",
 		clientVersion: identity.clientVersion,
 		entrypoint: identity.entrypoint,
+		...(model === undefined ? {} : { model }),
 		instructions,
-		tools: stringFields(arrayField(body, "tools") ?? [], "name"),
+		...toolSurface(arrayField(body, "tools") ?? []),
 		ambient,
 	};
 }
 
-function codexToolNames(declarations: readonly unknown[]): string[] {
-	return declarations.flatMap(declaration => {
-		const nested = arrayField(declaration, "tools");
-		if (nested !== undefined) return codexToolNames(nested);
-		const name = stringField(declaration, "name");
-		return name === undefined ? [] : [name];
-	});
+/** The declared tools plus their names, which the reader keys on. */
+function toolSurface(declared: readonly unknown[]): Pick<Derivation, "tools" | "declarations"> {
+	const declarations = toolDeclarations(declared);
+	return { tools: declarations.map(declaration => declaration.name), declarations };
 }
 
 function codexIdentity(headers: Headers): { clientVersion: string; entrypoint: string } | undefined {
@@ -127,11 +148,11 @@ function deriveCodex(body: unknown, headers: Headers): Derivation | undefined {
 	if (identity === undefined) return undefined;
 	const instructions: string[] = [];
 	const ambient: string[] = [];
-	const tools: string[] = [];
+	const declared: unknown[] = [];
 	let basePromptSeen = false;
 	for (const item of input) {
 		if (stringField(item, "type") === "additional_tools") {
-			tools.push(...codexToolNames(arrayField(item, "tools") ?? []));
+			declared.push(...(arrayField(item, "tools") ?? []));
 			continue;
 		}
 		const role = stringField(item, "role");
@@ -148,7 +169,7 @@ function deriveCodex(body: unknown, headers: Headers): Derivation | undefined {
 		clientVersion: identity.clientVersion,
 		entrypoint: identity.entrypoint,
 		instructions,
-		tools,
+		...toolSurface(declared),
 		ambient,
 		...(fallback !== undefined && { fallback }),
 	};
@@ -239,7 +260,10 @@ export async function recordHarnessRequest(request: AuthGatewayHarnessRequest): 
 		logger.warn("Harness recorder: client identity is not a safe filename; nothing written", identity);
 		return;
 	}
-	const file = path.join(getHarnessCacheDir(), profile, `${clientVersion}-${entrypoint}.json`);
+	// The model is part of the identity because the vendor prompt names it, so
+	// each model gets its own file instead of overwriting another model's text.
+	const modelSuffix = derived.model !== undefined && CAPTURE_IDENTITY.test(derived.model) ? `-${derived.model}` : "";
+	const file = path.join(getHarnessCacheDir(), profile, `${clientVersion}-${entrypoint}${modelSuffix}.json`);
 	let written: boolean;
 	try {
 		written = await writeCapture(profile, file, capture);

@@ -4,7 +4,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { buildAnthropicSystemBlocks, claudeCodeSystemInstruction } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import { HARNESS_CAPTURE_SCHEMA, resetHarnessPromptCache } from "@oh-my-pi/pi-coding-agent/harness/capture";
+import {
+	HARNESS_CAPTURE_SCHEMA,
+	resetHarnessPromptCache,
+	servedHarnessPrompt,
+} from "@oh-my-pi/pi-coding-agent/harness/capture";
 import { buildSystemPrompt as buildSdkSystemPrompt } from "@oh-my-pi/pi-coding-agent/sdk";
 import { buildSystemPrompt, type SystemPromptToolMetadata } from "@oh-my-pi/pi-coding-agent/system-prompt";
 import { withHarnessCacheDir } from "./helpers/harness";
@@ -71,6 +75,7 @@ interface CaptureOverrides {
 	entrypoint?: string;
 	instructions?: string[];
 	tools?: string[];
+	declarations?: Array<{ name: string; description: string }>;
 	ambient?: string[];
 	fallback?: unknown;
 	schema?: number;
@@ -105,6 +110,7 @@ describe("harness prompt custody", () => {
 				HARNESS_MAIN_BLOCK,
 			],
 			tools: overrides.tools ?? ["Bash", "Read", "Edit"],
+			...(overrides.declarations !== undefined && { declarations: overrides.declarations }),
 			...(overrides.ambient !== undefined && { ambient: overrides.ambient }),
 			...(overrides.fallback !== undefined && { fallback: overrides.fallback }),
 		};
@@ -127,6 +133,17 @@ describe("harness prompt custody", () => {
 			...(harnessProfile !== undefined && { harnessProfile }),
 		});
 	}
+
+	it("serves the vendor's tool descriptions by wire name and keeps omp's directives out of the footer", async () => {
+		writeCapture({ declarations: [{ name: "Read", description: "Reads a file from the local filesystem." }] });
+
+		const { systemPrompt } = await build("claude-code");
+
+		const served = servedHarnessPrompt(getBundledModel("anthropic", "claude-opus-5"));
+		expect(served?.descriptions).toEqual({ Read: "Reads a file from the local filesystem." });
+		expect(systemPrompt.join("\n")).not.toContain("<critical>");
+		expect((await build()).systemPrompt.join("\n")).toContain("<critical>");
+	});
 
 	it("leads with the captured harness text verbatim and leaves the identity line to the wire layer", async () => {
 		writeCapture();

@@ -8,6 +8,7 @@ import {
 	claudeCodeSystemInstruction,
 } from "@oh-my-pi/pi-ai/providers/claude-code-fingerprint";
 import { type HarnessProfile, resolveHarnessProfile } from "@oh-my-pi/pi-catalog/compat/harness";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { getHarnessCacheDir, isEnoent, logger } from "@oh-my-pi/pi-utils";
 
 export const HARNESS_CAPTURE_SCHEMA = 1;
@@ -40,8 +41,14 @@ const captureSchema = type({
 	clientVersion: "string",
 	entrypoint: "string",
 	"capturedAt?": "string",
+	"model?": "string",
 	instructions: "string[]",
 	tools: "string[]",
+	// Full declarations as the vendor client sent them: the description is what
+	// a bridged tool presents under the profile, so the model reads the vendor's
+	// own words for `Read`/`Bash`/`Agent` rather than omp's. Optional so
+	// captures recorded before declarations were kept still serve their prompt.
+	"declarations?": [{ name: "string", description: "string", "input_schema?": "unknown" }, "[]"],
 	"ambient?": "string[]",
 	"fallback?": "unknown",
 });
@@ -52,10 +59,19 @@ export interface HarnessPrompt {
 	readonly text: string;
 	readonly clientVersion: string;
 	readonly path: string;
+	/** Vendor tool description by wire name; empty for captures that recorded names only. */
+	readonly descriptions: Readonly<Record<string, string>>;
 }
 
 type CaptureProjection =
-	| { readonly ok: true; readonly text: string; readonly clientVersion: string; readonly capturedAt: number }
+	| {
+			readonly ok: true;
+			readonly text: string;
+			readonly clientVersion: string;
+			readonly capturedAt: number;
+			readonly model?: string;
+			readonly descriptions: Readonly<Record<string, string>>;
+	  }
 	| { readonly ok: false; readonly reason: string };
 
 function stripWireOwnedLines(block: string, wireOwned: WireOwnedLeading): string {
@@ -130,32 +146,56 @@ export function projectHarnessCapture(profile: HarnessProfile, raw: unknown): Ca
 	}
 	if (blocks.length === 0) return { ok: false, reason: "instructions-empty" };
 	const capturedAt = capture.capturedAt === undefined ? Number.NaN : Date.parse(capture.capturedAt);
+	const descriptions: Record<string, string> = {};
+	for (const declaration of capture.declarations ?? []) {
+		if (declaration.description.trim().length > 0) descriptions[declaration.name] = declaration.description;
+	}
 	return {
 		ok: true,
 		text: blocks.join("\n\n"),
 		clientVersion: capture.clientVersion,
 		capturedAt: Number.isNaN(capturedAt) ? 0 : capturedAt,
+		descriptions,
+		...(capture.model === undefined ? {} : { model: capture.model }),
 	};
 }
 
-const resolvedPrompts = new Map<HarnessProfile, Promise<HarnessPrompt | null>>();
-const servedPrompts = new Map<HarnessProfile, HarnessPrompt>();
+const resolvedPrompts = new Map<string, Promise<HarnessPrompt | null>>();
+const servedPrompts = new Map<string, HarnessPrompt>();
 
-export function loadHarnessPrompt(profile: HarnessProfile): Promise<HarnessPrompt | null> {
-	const cached = resolvedPrompts.get(profile);
+/**
+ * Callers hand over anything from a bare catalog id to a `provider/id`
+ * selector, and a capture records whatever the vendor client sent. Compare the
+ * trailing segment so the two always meet, instead of missing silently and
+ * falling back to another model's text.
+ */
+function normalizeModelKey(model: string | undefined): string | undefined {
+	if (model === undefined) return undefined;
+	const slash = model.lastIndexOf("/");
+	return slash === -1 ? model : model.slice(slash + 1);
+}
+
+function promptCacheKey(profile: HarnessProfile, modelId: string | undefined): string {
+	return `${profile}\u0000${normalizeModelKey(modelId) ?? ""}`;
+}
+
+export function loadHarnessPrompt(profile: HarnessProfile, modelId?: string): Promise<HarnessPrompt | null> {
+	const key = promptCacheKey(profile, modelId);
+	const cached = resolvedPrompts.get(key);
 	if (cached) return cached;
-	const pending = readHarnessPrompt(profile).then(prompt => {
-		if (prompt !== null) servedPrompts.set(profile, prompt);
+	const pending = readHarnessPrompt(profile, normalizeModelKey(modelId)).then(prompt => {
+		if (prompt !== null) servedPrompts.set(key, prompt);
 		return prompt;
 	});
-	resolvedPrompts.set(profile, pending);
+	resolvedPrompts.set(key, pending);
 	return pending;
 }
 
 export function servedHarnessPrompt(model: Model | undefined): HarnessPrompt | undefined {
 	if (model === undefined || servedPrompts.size === 0) return undefined;
 	const profile = resolveHarnessProfile(model);
-	return profile === undefined ? undefined : servedPrompts.get(profile);
+	if (profile === undefined) return undefined;
+	return servedPrompts.get(promptCacheKey(profile, model.id)) ?? servedPrompts.get(promptCacheKey(profile, undefined));
 }
 
 export function resetHarnessPromptCache(): void {
@@ -163,7 +203,37 @@ export function resetHarnessPromptCache(): void {
 	servedPrompts.clear();
 }
 
-async function readHarnessPrompt(profile: HarnessProfile): Promise<HarnessPrompt | null> {
+// Non-greedy to the clause break, not to the first period: display names carry
+// dotted versions ("Claude Fable 5.1"), and truncating to "Claude Fable 5"
+// would never match the catalog name, dropping the paragraph even for a capture
+// recorded on the serving model.
+const MODEL_IDENTITY_SENTENCE = /This iteration of Claude is (Claude [^,]+?)(?:,|\.(?:\s|$))/;
+
+/**
+ * The vendor prompt opens with a paragraph naming the model the recording ran
+ * on ("This iteration of Claude is Claude Fable 5.1, the newest model…"), so
+ * replaying one model's capture to another asserts the wrong identity — which
+ * is what an Opus session reading a Fable recording saw.
+ *
+ * A capture recorded on the serving model is already correct. Otherwise the
+ * paragraph is dropped rather than rewritten: its remaining sentences are
+ * claims about that specific model ("part of the Mythos-class model tier that
+ * sits above Claude Opus"), so substituting the name would leave the model
+ * reading falsehoods about itself. Only that paragraph goes; the rest of the
+ * vendor text, including the model-id reference table elsewhere in the prompt,
+ * stays byte-identical. Record a capture per model to keep the paragraph.
+ */
+function alignModelIdentity(text: string, servingModelId: string | undefined): string {
+	const recorded = MODEL_IDENTITY_SENTENCE.exec(text)?.[1];
+	if (recorded === undefined) return text;
+	const servingName = servingModelId === undefined ? undefined : getBundledModel("anthropic", servingModelId)?.name;
+	if (servingName !== undefined && recorded === servingName) return text;
+	const paragraphs = text.split("\n\n");
+	const kept = paragraphs.filter(paragraph => !MODEL_IDENTITY_SENTENCE.test(paragraph));
+	return kept.length === paragraphs.length ? text : kept.join("\n\n");
+}
+
+async function readHarnessPrompt(profile: HarnessProfile, modelId?: string): Promise<HarnessPrompt | null> {
 	const dir = path.join(getHarnessCacheDir(), profile);
 	let names: string[];
 	try {
@@ -179,6 +249,7 @@ async function readHarnessPrompt(profile: HarnessProfile): Promise<HarnessPrompt
 	const files = names.filter(name => name.endsWith(".json")).sort();
 	let best: HarnessPrompt | undefined;
 	let bestCapturedAt = 0;
+	let bestExact = false;
 	for (const name of files) {
 		const file = path.join(dir, name);
 		let raw: unknown;
@@ -193,9 +264,20 @@ async function readHarnessPrompt(profile: HarnessProfile): Promise<HarnessPrompt
 			logger.debug("Harness capture rejected; ignoring it", { profile, file, reason: projection.reason });
 			continue;
 		}
-		if (best !== undefined && projection.capturedAt <= bestCapturedAt) continue;
-		best = { text: projection.text, clientVersion: projection.clientVersion, path: file };
+		// A capture recorded on the serving model beats every other candidate,
+		// however recent: it is the only one whose vendor text already names the
+		// right model. Among equally-matching candidates the newest wins.
+		const exact = modelId !== undefined && normalizeModelKey(projection.model) === modelId;
+		if (
+			best !== undefined &&
+			((bestExact && !exact) || (bestExact === exact && projection.capturedAt <= bestCapturedAt))
+		) {
+			continue;
+		}
+		const text = alignModelIdentity(projection.text, modelId);
+		best = { text, clientVersion: projection.clientVersion, path: file, descriptions: projection.descriptions };
 		bestCapturedAt = projection.capturedAt;
+		bestExact = exact;
 	}
 	if (best === undefined) {
 		logger.debug("No valid harness capture; using omp's native prompt", { profile, dir, candidates: files.length });
