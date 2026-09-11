@@ -531,7 +531,8 @@ function parseSqliteWriteTarget(subPath: string, queryString: string): { table: 
 export class WriteTool implements AgentTool<WriteInputSchema, WriteToolDetails> {
 	readonly name = "write";
 	readonly approval = (args: unknown): ToolApprovalDecision => {
-		const rawPath = harnessParams(this.session, WRITE_BRIDGES, args).path;
+		const params = harnessParams(this.session, WRITE_BRIDGES, args);
+		const rawPath = params.path;
 		if (typeof rawPath !== "string") return "write";
 		// Unwrap a hashline `[path#TAG]` wrapper first (parity with execute) so a
 		// wrapped `[ssh://h/x#ABCD]` can't dodge scheme detection and the tier checks below.
@@ -552,7 +553,7 @@ export class WriteTool implements AgentTool<WriteInputSchema, WriteToolDetails> 
 			// Malformed JSON, non-object payloads, missing content, and approval
 			// functions that reject schema-invalid objects stay exec so the gate
 			// fails closed — the dispatch itself rejects invalid arguments too.
-			const rawContent = harnessParams(this.session, WRITE_BRIDGES, args).content;
+			const rawContent = params.content;
 			if (typeof rawContent !== "string") return "exec";
 			let parsed: unknown;
 			try {
