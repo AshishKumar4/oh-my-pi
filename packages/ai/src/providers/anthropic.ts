@@ -56,7 +56,7 @@ import {
 	isRecord,
 	normalizeSystemPrompts,
 	normalizeToolCallId,
-	resolveCacheRetention,
+	explicitCacheRetention,
 } from "../utils";
 import { createAbortSourceTracker } from "../utils/abort";
 import {
@@ -584,20 +584,31 @@ function getCacheControl(
 	model: Model<"anthropic-messages">,
 	cacheRetention: CacheRetention | undefined,
 	isOAuthToken = false,
-): { retention: CacheRetention; cacheControl?: AnthropicCacheControl } {
+): { retention: CacheRetention; headCacheControl?: AnthropicCacheControl; tailCacheControl?: AnthropicCacheControl } {
 	// Five-minute writes are the cheapest cache population strategy for pay-per-token API keys.
 	// For OAuth (Claude Code subscriber seats), match Claude Code's native policy by defaulting
 	// to 1h retention where supported, avoiding cold cache re-writes after 15m idle intervals.
 	// An explicit cacheRetention ('short', 'long', 'none') or PI_CACHE_RETENTION always takes precedence.
+	const explicit = explicitCacheRetention(cacheRetention);
 	const defaultRetention = isOAuthToken && model.compat.supportsLongCacheRetention ? "long" : "short";
-	const retention = resolveCacheRetention(cacheRetention, defaultRetention);
+	const retention = explicit ?? defaultRetention;
 	if (retention === "none") {
 		return { retention };
 	}
-	const ttl = retention === "long" && model.compat.supportsLongCacheRetention ? "1h" : undefined;
+	// The head (tools + system) is written once and re-read for the rest of the
+	// session, so an hour of retention is cheap insurance. The message tail is
+	// rewritten every turn, and Anthropic charges 2x base input for a 1h write
+	// against 1.25x for 5m — so pinning the tail taxes every turn to insure
+	// against idle gaps that measurement says are rare. Default to the mixed
+	// shape; an explicit `long` still pins everything, since the caller asked.
+	// Anthropic requires longer TTLs to precede shorter ones, which the wire
+	// order (tools, system, then messages) already satisfies.
+	const longSupported = model.compat.supportsLongCacheRetention;
+	const ephemeral: AnthropicCacheControl = { type: "ephemeral" };
 	return {
 		retention,
-		cacheControl: { type: "ephemeral", ...(ttl && { ttl }) },
+		headCacheControl: retention === "long" && longSupported ? { type: "ephemeral", ttl: "1h" } : ephemeral,
+		tailCacheControl: explicit === "long" && longSupported ? { type: "ephemeral", ttl: "1h" } : ephemeral,
 	};
 }
 
@@ -2458,7 +2469,7 @@ const streamAnthropicOnce = (
 				const isOAuth = options?.isOAuth ?? isAnthropicOAuthToken(apiKey);
 				if (
 					!isOAuth &&
-					getCacheControl(model, options?.cacheRetention, isOAuth).cacheControl?.ttl === "1h" &&
+					getCacheControl(model, options?.cacheRetention, isOAuth).headCacheControl?.ttl === "1h" &&
 					!extraBetas.includes(extendedCacheTtlBeta)
 				) {
 					extraBetas.push(extendedCacheTtlBeta);
@@ -4436,7 +4447,7 @@ function buildParams(
 		forceDemoteUnsignedThinking && model.compat.replayUnsignedThinking
 			? { ...model, compat: { ...model.compat, replayUnsignedThinking: false } }
 			: model;
-	const { cacheControl } = getCacheControl(model, options?.cacheRetention, isOAuthToken);
+	const { headCacheControl, tailCacheControl } = getCacheControl(model, options?.cacheRetention, isOAuthToken);
 
 	// Pre-compute system blocks so they occupy the right slot in the serialized body.
 	const shouldInjectClaudeCodeInstruction = isOAuthToken && model.compat.injectClaudeCodeInstruction !== false;
@@ -4446,7 +4457,7 @@ function buildParams(
 	let systemBlocks = buildAnthropicSystemBlocks(context.systemPrompt, {
 		includeClaudeCodeInstruction: shouldInjectClaudeCodeInstruction,
 		firstUserMessageText,
-		cacheControl,
+		cacheControl: headCacheControl,
 	});
 
 	// Pre-compute tools.
@@ -4577,7 +4588,7 @@ function buildParams(
 	tools = planStableAnthropicTools(tools, wireMessages, controlState, model.compat.supportsMidConversationToolChanges);
 	// Anchor the stable tools+system head so it stays cached across turns; the
 	// moving message tail is anchored separately in applyPromptCaching below.
-	applyHeadCaching(systemBlocks, tools, cacheControl, resolveHarnessProfile(model));
+	applyHeadCaching(systemBlocks, tools, headCacheControl, resolveHarnessProfile(model));
 	const topLevelEffort = planStableAnthropicEffort(
 		outputConfigEffort,
 		wireMessages,
@@ -4687,7 +4698,7 @@ function buildParams(
 
 	disableThinkingIfToolChoiceForced(params, model);
 	ensureMaxTokensForThinking(params, maxOutputTokens);
-	applyPromptCaching(params, cacheControl);
+	applyPromptCaching(params, tailCacheControl);
 
 	return params;
 }

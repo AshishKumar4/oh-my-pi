@@ -280,7 +280,7 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(options.defaultHeaders["anthropic-beta"]).not.toContain("context-1m-2025-08-07");
 	});
 
-	it("places a 1h breakpoint on the trailing message in a one-message OAuth request by default", async () => {
+	it("pins the head at 1h and leaves the trailing message at 5m in a one-message OAuth request", async () => {
 		const payload = (await captureAnthropicPayload(ANTHROPIC_MODEL, {
 			systemPrompt: ["Stay concise."],
 			messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
@@ -297,9 +297,10 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(payload.system?.[2]?.cache_control).toBeUndefined();
 		const content = payload.messages?.[0]?.content;
 		expect(Array.isArray(content)).toBe(true);
+		// The tail is rewritten every turn, so it stays on the 1.25x 5m rate while
+		// the stable head above carries the 2x hour.
 		expect(Array.isArray(content) ? content[0]?.cache_control : undefined).toEqual({
 			type: "ephemeral",
-			ttl: "1h",
 		});
 	});
 
@@ -339,7 +340,6 @@ describe("Anthropic request fingerprint alignment", () => {
 		const content = payload.messages?.[0]?.content;
 		expect(Array.isArray(content) ? content[0]?.cache_control : undefined).toEqual({
 			type: "ephemeral",
-			ttl: "1h",
 		});
 	});
 
@@ -387,13 +387,11 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(Array.isArray(assistantContent) ? assistantContent.at(-1)?.type : undefined).toBe("tool_use");
 		expect(Array.isArray(assistantContent) ? assistantContent.at(-1)?.cache_control : undefined).toEqual({
 			type: "ephemeral",
-			ttl: "1h",
 		});
 		const lastContent = messages.at(-1)?.content;
 		expect(Array.isArray(lastContent) ? lastContent.at(-1)?.type : undefined).toBe("tool_result");
 		expect(Array.isArray(lastContent) ? lastContent.at(-1)?.cache_control : undefined).toEqual({
 			type: "ephemeral",
-			ttl: "1h",
 		});
 	});
 
@@ -1713,7 +1711,6 @@ describe("Anthropic request fingerprint alignment", () => {
 		const content = payload.messages?.at(-1)?.content;
 		expect(Array.isArray(content) ? content.at(-1)?.cache_control : undefined).toEqual({
 			type: "ephemeral",
-			ttl: "1h",
 		});
 		expect(payload.system?.[1]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
 		expect(payload.system?.[2]?.cache_control).toBeUndefined();

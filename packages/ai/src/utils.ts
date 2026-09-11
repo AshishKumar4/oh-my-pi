@@ -494,8 +494,16 @@ export function resolveCacheRetention(
 	cacheRetention?: CacheRetention,
 	fallback: CacheRetention = "short",
 ): CacheRetention {
+	return explicitCacheRetention(cacheRetention) ?? fallback;
+}
+
+/**
+ * The retention the caller or environment actually asked for, or undefined when
+ * neither did. Lets a provider treat "the user chose long" differently from
+ * "long is this route's default".
+ */
+export function explicitCacheRetention(cacheRetention?: CacheRetention): CacheRetention | undefined {
 	if (cacheRetention) return cacheRetention;
 	const env = $env.PI_CACHE_RETENTION;
-	if (env === "long" || env === "short" || env === "none") return env;
-	return fallback;
+	return env === "long" || env === "short" || env === "none" ? env : undefined;
 }

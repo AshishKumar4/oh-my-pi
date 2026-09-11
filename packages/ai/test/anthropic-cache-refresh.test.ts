@@ -325,31 +325,41 @@ describe("Anthropic prompt-cache refresh", () => {
 		}
 	});
 
-	it("arms no keep-alive refresh for an OAuth request with automatic retention", async () => {
-		// The coding agent enables `anthropicCacheRefresh` and never passes an explicit
-		// retention, so `streamSimpleWithAnthropicCacheRefresh` resolves the omitted value
-		// as `short` and installs the refresh state. Only the emitted payload proves the
-		// 4m45 timer stays unarmed: OAuth now defaults to 1h, so no short breakpoint exists
-		// for `hasShortAnthropicMessageBreakpoint` to find.
+	it("writes the message tail at 5m under the OAuth default so the keep-warm loop covers it", async () => {
+		// The OAuth default pins only the tools+system head at 1h; the tail is
+		// rewritten every turn, where a 2x write buys insurance against idle gaps
+		// that traces show are rare. Keeping the tail at 5m therefore leaves a
+		// short breakpoint for `hasShortAnthropicMessageBreakpoint`, so the 4m45
+		// keep-warm replay arms and holds it warm at cache-read price.
 		vi.useFakeTimers();
 		const capture: FetchCapture = { bodies: [], thinkingRefreshAborted: false };
 		const fetch = createFetch(["ordinary-write"], capture);
 		const states = createProviderSessionState();
 
 		await finishRequest(fetch, states, { apiKey: "sk-ant-oat-test-subscriber" });
-		vi.advanceTimersByTime(CACHE_REFRESH_DELAY_MS * 4);
 		await Promise.resolve();
 
-		expect(capture.bodies).toHaveLength(1);
-		const blocks = (capture.bodies[0]?.messages ?? []).flatMap(message =>
-			Array.isArray(message.content) ? message.content : [],
-		);
-		const breakpoints = blocks
+		const first = capture.bodies[0];
+		const systemTtls = (Array.isArray(first?.system) ? first.system : [])
 			.map(block => ("cache_control" in block ? (block.cache_control ?? undefined) : undefined))
-			.filter((cc): cc is CacheControlEphemeral => cc != null);
-		expect(breakpoints.length).toBeGreaterThan(0);
-		for (const cc of breakpoints) {
-			expect(cc.ttl).toBe("1h");
-		}
+			.filter((cc): cc is CacheControlEphemeral => cc != null)
+			.map(cc => cc.ttl);
+		const tailTtls = (first?.messages ?? [])
+			.flatMap(message => (Array.isArray(message.content) ? message.content : []))
+			.map(block => ("cache_control" in block ? (block.cache_control ?? undefined) : undefined))
+			.filter((cc): cc is CacheControlEphemeral => cc != null)
+			.map(cc => cc.ttl);
+
+		expect(systemTtls.length).toBeGreaterThan(0);
+		// Anthropic bills longer TTLs only up to the last 1h breakpoint, and
+		// requires them to precede shorter ones: head 1h, then tail 5m.
+		for (const ttl of systemTtls) expect(ttl).toBe("1h");
+		expect(tailTtls.length).toBeGreaterThan(0);
+		for (const ttl of tailTtls) expect(ttl).toBeUndefined();
+
+		// A 5m tail is what the keep-warm replay exists for.
+		vi.advanceTimersByTime(CACHE_REFRESH_DELAY_MS + 1_000);
+		await Promise.resolve();
+		expect(capture.bodies.length).toBeGreaterThan(1);
 	});
 });
