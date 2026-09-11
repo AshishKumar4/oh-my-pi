@@ -5379,6 +5379,8 @@ export const SETTINGS_SCHEMA = {
 
 	"skills.enableAgentsProject": { type: "boolean", default: true },
 
+	"skills.enableManagedUser": { type: "boolean", default: true },
+
 	"skills.customDirectories": { type: "array", default: [] as string[] },
 
 	"skills.ignoredSkills": { type: "array", default: [] as string[] },
@@ -6388,6 +6390,7 @@ export interface SkillsSettings {
 	enablePiProject?: boolean;
 	enableAgentsUser?: boolean;
 	enableAgentsProject?: boolean;
+	enableManagedUser?: boolean;
 	customDirectories?: string[];
 	ignoredSkills?: string[];
 	includeSkills?: string[];
