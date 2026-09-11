@@ -3587,6 +3587,12 @@ export class AuthStorage {
 		const cached = forceRefresh ? undefined : this.#usageCache.get<UsageReport | null>(cacheKey);
 		// Fresh cache hit: return whatever's there (success or null fallback).
 		if (cached && cached.expiresAt > now) {
+			// Reconcile on this path too, not just after a network fetch: the
+			// report that proves a scope recovered is usually already cached (an
+			// `omp usage` render warms every credential), and healing is local
+			// work whose own freshness guard still holds back a block that a
+			// just-returned 429 wrote.
+			if (cached.value !== null) this.#reconcileUsageBlock(request, cached.value);
 			return cached.value;
 		}
 

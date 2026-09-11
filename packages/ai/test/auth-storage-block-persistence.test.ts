@@ -169,7 +169,6 @@ describe("AuthStorage credential block persistence", () => {
 			});
 		}
 		setup.close();
-		ageCredentialBlocks(dbPath, LEGACY_TIMESTAMP);
 
 		const store = await SqliteAuthCredentialStore.open(dbPath);
 		const storage = new AuthStorage(store, {
@@ -197,6 +196,15 @@ describe("AuthStorage credential block persistence", () => {
 		});
 		await storage.reload();
 		try {
+			// This first pass warms the usage cache while the blocks are still too
+			// fresh to heal, which is the ordinary state of a session: `omp usage`
+			// or an earlier turn already fetched every report. Healing therefore
+			// has to work off the cached report, not only a fresh fetch.
+			expect(await storage.getApiKey(PROVIDER, "session-warm", { modelId: "claude-fable-5-1" })).toBe(
+				"access-spent",
+			);
+			ageCredentialBlocks(dbPath, LEGACY_TIMESTAMP);
+
 			const key = await storage.getApiKey(PROVIDER, "session-heal", { modelId: "claude-fable-5-1" });
 
 			expect(key).toBe("access-recovered");
