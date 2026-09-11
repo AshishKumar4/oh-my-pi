@@ -169,8 +169,9 @@ const MALFORMED_FUNCTION_CALL_PATTERN = /\bmalformed.?function.?call\b/i;
 const PROVIDER_FINISH_ERROR_PATTERN = /\bProvider (?:returned error finish_reason|finish_reason:\s*error)\b/i;
 const EMPTY_RESPONSE_PATTERN = /\bthought-only response without final output\b/i;
 const CONTENT_FILTER_PATTERN = /\b(?:incomplete:\s*)?content_filter\b/i;
-const ACCOUNT_POLICY_PATTERN =
-	/\bcyber_policy\b|trusted access for cyber|\boauth_not_allowed_for_organization\b|oauth authentication is currently not allowed for this organization/i;
+const ORG_OAUTH_DENIAL_PATTERN =
+	/\boauth_not_allowed_for_organization\b|oauth authentication is currently not allowed for this organization/i;
+const ACCOUNT_POLICY_PATTERN = /\bcyber_policy\b|trusted access for cyber/i;
 const CODEX_CHATGPT_ACCOUNT_MODEL_POLICY_PATTERN =
 	/\bThe ['"]([^'"\r\n]+)['"] model is not supported when using Codex with a ChatGPT account\./i;
 const CODEX_CHATGPT_ACCOUNT_MODEL_MAX_LENGTH = 256;
@@ -458,6 +459,7 @@ function classifyText(
 		if (isContentBlockedText(errorMessage)) kinds |= Flag.ContentBlocked;
 		if (
 			ACCOUNT_POLICY_PATTERN.test(errorMessage) ||
+			ORG_OAUTH_DENIAL_PATTERN.test(errorMessage) ||
 			isCodexChatGPTAccountPolicyText(errorMessage, provider, modelId) ||
 			(provider === "cursor" && isCursorPlanPolicyText(errorMessage))
 		) {
@@ -625,6 +627,25 @@ export function isUsageLimit(error: unknown, api?: Api): boolean {
 /** Whether an upstream rejection is an account-scoped policy denial worth retrying with a sibling credential. */
 export function isAccountPolicyError(error: unknown, api?: Api): boolean {
 	return is(classify(error, api), Flag.AccountPolicy);
+}
+
+/**
+ * Whether the denial is an organization-wide OAuth prohibition. It holds until
+ * an administrator changes the org setting, unlike the per-request content
+ * denials that share the account-policy flag, so the credential is worth
+ * setting aside for longer than a rotate-and-retry window.
+ */
+export function isOrgOAuthDenialError(error: unknown, depth = 0): boolean {
+	if (depth > 6) return false;
+	if (typeof error === "string") return ORG_OAUTH_DENIAL_PATTERN.test(error);
+	if (!error || typeof error !== "object") return false;
+	if ("errorMessage" in error && typeof error.errorMessage === "string") {
+		if (ORG_OAUTH_DENIAL_PATTERN.test(error.errorMessage)) return true;
+	}
+	if ("message" in error && typeof error.message === "string" && ORG_OAUTH_DENIAL_PATTERN.test(error.message)) {
+		return true;
+	}
+	return "cause" in error && isOrgOAuthDenialError(error.cause, depth + 1);
 }
 
 /**

@@ -1341,6 +1341,8 @@ type RankedApiKeyCandidate = UsageRankedCandidate<ApiKeyCredential>;
  */
 export class AuthStorage {
 	static readonly #defaultBackoffMs = 60_000; // Default backoff when no reset time available
+	/** Org-wide OAuth prohibitions need an admin change, so bounded but far longer than a rotate-and-retry. */
+	static readonly #orgDenialBackoffMs = 6 * 60 * 60 * 1000;
 
 	/** Provider -> credentials cache, populated from store on reload(). */
 	#data: Map<string, StoredCredential[]> = new Map();
@@ -6906,11 +6908,19 @@ export class AuthStorage {
 				options?.modelId,
 				modelPolicyScope,
 			);
+			// A content-triggered denial (cyber_policy) is per-request, so the
+			// credential rotates back in after the short window. An org-wide OAuth
+			// prohibition holds until an administrator changes it, and re-selecting
+			// every minute just spends a 403 per minute on a credential that cannot
+			// serve any model.
+			const blockedUntil =
+				Date.now() +
+				(AIError.isOrgOAuthDenialError(error) ? AuthStorage.#orgDenialBackoffMs : AuthStorage.#defaultBackoffMs);
 			return this.#blockCredentialForRotation(
 				provider,
 				sessionCredential.type,
 				sessionCredential.index,
-				Date.now() + AuthStorage.#defaultBackoffMs,
+				blockedUntil,
 				routing,
 				false,
 			).switched;
