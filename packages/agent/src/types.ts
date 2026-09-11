@@ -794,6 +794,16 @@ export interface AgentTool<
 	/** If true, tool is excluded unless explicitly listed in --tools or agent's tools field */
 	hidden?: boolean;
 	persistAs?: string;
+	/**
+	 * Project validated wire-shaped arguments into the persisted identity's
+	 * shape for name-keyed event surfaces (`tool_execution_start`/`update`).
+	 * A tool that dispatches under one name while persisting under another
+	 * (see `persistAs`) maps wire args to target args here, so an event filed
+	 * under the omp name carries omp-shaped args. The persisted toolCall block
+	 * keeps the wire shape for faithful provider replay. A throw or a
+	 * non-record return falls back to the raw args.
+	 */
+	toEventArgs?: (args: Record<string, unknown>) => unknown;
 	/** If true, tool can stage a pending action that requires explicit resolution via the resolve tool. */
 	deferrable?: boolean;
 	/** How an enabled tool is presented. See {@link ToolLoadMode}. Omitted is treated as `"essential"` for built-ins; custom-tool adapters normalize omission to `"discoverable"`. */

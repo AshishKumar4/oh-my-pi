@@ -16,6 +16,7 @@ import * as evalIndex from "@oh-my-pi/pi-coding-agent/eval";
 import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { resolveApproval } from "@oh-my-pi/pi-coding-agent/tools/approval";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { EvalTool } from "@oh-my-pi/pi-coding-agent/tools/eval";
@@ -206,6 +207,29 @@ describe("claude-code SendMessage facade", () => {
 			tools: [hub, facade],
 		});
 		expect(replayed).toEqual(["SendMessage"]);
+	});
+
+	it("emits tool_execution_start under the omp name with omp-shaped args", async () => {
+		const registry = AgentRegistry.global();
+		registry.register({ id: PEER, displayName: PEER, kind: "sub", session: null, status: "running" });
+		const hub = new HubTool(toolSession()) as unknown as AgentTool;
+		const facade = facadeFor("claude-code", "SendMessage", hub);
+
+		const { assistant, events } = await runFacadeCall(CLAUDE_CODE_MODEL, [hub, facade], {
+			name: "SendMessage",
+			arguments: { to: PEER, message: "ping", summary: "ping" },
+		});
+
+		const start = events.find(event => event.type === "tool_execution_start");
+		expect(start?.type === "tool_execution_start" ? [start.toolName, start.args] : undefined).toEqual([
+			"hub",
+			{ op: "send", to: PEER, message: "ping" },
+		]);
+		expect(assistant.content.find(block => block.type === "toolCall")).toMatchObject({
+			name: "hub",
+			wireName: "SendMessage",
+			arguments: { to: PEER, message: "ping", summary: "ping" },
+		});
 	});
 
 	it("rejects notify_when_idle by name instead of dropping it", async () => {

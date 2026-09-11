@@ -47,7 +47,7 @@ import {
 	signalListLabel,
 } from "@oh-my-pi/pi-ai/utils/harmony-leak";
 import { resolveHarnessProfile } from "@oh-my-pi/pi-catalog/compat/harness";
-import { logger, sanitizeText, structuredCloneJSON } from "@oh-my-pi/pi-utils";
+import { isRecord, logger, sanitizeText, structuredCloneJSON } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { agentPauseGate } from "./pause";
 import { type AgentRunCoverage, type AgentRunSummary, ToolCallBlockedError } from "./run-collector";
@@ -1341,7 +1341,14 @@ async function runLoopBody(
 					const toolResults: ToolResultMessage[] = [];
 					for (const toolCall of toolCalls) {
 						const errorMessage = toolCallAbortMessages?.[toolCall.id] ?? message.errorMessage;
-						const result = createAbortedToolResult(toolCall, stream, message.stopReason, errorMessage);
+						const result = createAbortedToolResult(
+							toolCall,
+							stream,
+							message.stopReason,
+							errorMessage,
+							currentContext.tools,
+							config.resolveFallbackTool,
+						);
 						currentContext.messages.push(result);
 						newMessages.push(result);
 						toolResults.push(result);
@@ -1426,6 +1433,8 @@ async function runLoopBody(
 							stream,
 							"skipped",
 							`Not executed: call the \`${softRequiredTool}\` tool to resolve the pending action before using other tools.`,
+							currentContext.tools,
+							config.resolveFallbackTool,
 						);
 						currentContext.messages.push(result);
 						newMessages.push(result);
@@ -1462,7 +1471,14 @@ async function runLoopBody(
 					const skipReason = deadlinePassed ? "aborted" : message.stopReason === "length" ? "length" : "skipped";
 					const skipErrMsg = deadlinePassed ? "Deadline exceeded" : undefined;
 					for (const toolCall of toolCalls) {
-						const result = createAbortedToolResult(toolCall, stream, skipReason, skipErrMsg);
+						const result = createAbortedToolResult(
+							toolCall,
+							stream,
+							skipReason,
+							skipErrMsg,
+							currentContext.tools,
+							config.resolveFallbackTool,
+						);
 						currentContext.messages.push(result);
 						newMessages.push(result);
 						toolResults.push(result);
@@ -2276,6 +2292,20 @@ function resolveToolForCall(
 	);
 }
 
+function eventArgsForToolCall(
+	tool: Pick<AgentTool, "persistAs" | "toEventArgs"> | undefined,
+	toolCallName: string,
+	args: Record<string, unknown>,
+): Record<string, unknown> {
+	if (tool?.persistAs === undefined || toolCallName !== tool.persistAs) return args;
+	try {
+		const projected = tool.toEventArgs?.(args);
+		return isRecord(projected) ? projected : args;
+	} catch {
+		return args;
+	}
+}
+
 /** Shortest suggestable segment; below this the match is noise (`id`, `to`). */
 const MIN_TOOL_NAME_SUGGESTION_SEGMENT = 3;
 /** Cap on names listed for an ambiguous miss, so the error stays readable. */
@@ -2597,7 +2627,7 @@ async function executeToolCalls(
 				type: "tool_execution_start",
 				toolCallId: toolCall.id,
 				toolName: toolCall.name,
-				args: record.args,
+				args: eventArgsForToolCall(record.tool, toolCall.name, record.args),
 				intent: toolCall.intent,
 			});
 		}
@@ -2687,7 +2717,7 @@ async function executeToolCalls(
 			type: "tool_execution_start",
 			toolCallId: toolCall.id,
 			toolName: toolCall.name,
-			args: effectiveArgs,
+			args: eventArgsForToolCall(tool, toolCall.name, effectiveArgs),
 			intent: toolCall.intent,
 		});
 
@@ -2750,7 +2780,7 @@ async function executeToolCalls(
 							type: "tool_execution_update",
 							toolCallId: toolCall.id,
 							toolName: toolCall.name,
-							args: executionArgs,
+							args: eventArgsForToolCall(tool, toolCall.name, executionArgs),
 							partialResult: coerceToolResult(partialResult).result,
 						});
 					},
@@ -3080,18 +3110,21 @@ function createAbortedToolResult(
 	stream: EventStream<AgentEvent, AgentMessage[]>,
 	reason: "aborted" | "error" | "skipped" | "length",
 	errorMessage?: string,
+	tools?: AgentTool<any>[] | undefined,
+	resolveFallbackTool?: AgentLoopConfig["resolveFallbackTool"],
 ): ToolResultMessage {
 	const toolResultMessage = createSyntheticToolResultMessage(toolCall, reason, errorMessage);
 	const result: AgentToolResult<SyntheticToolResultDetails> = {
 		content: toolResultMessage.content,
 		details: toolResultMessage.details,
 	};
+	const tool = tools === undefined ? undefined : resolveToolForCall(tools, toolCall, resolveFallbackTool);
 
 	stream.push({
 		type: "tool_execution_start",
 		toolCallId: toolCall.id,
 		toolName: toolCall.name,
-		args: toolCall.arguments,
+		args: eventArgsForToolCall(tool, toolCall.name, toolCall.arguments),
 		intent: toolCall.intent,
 	});
 	stream.push({
