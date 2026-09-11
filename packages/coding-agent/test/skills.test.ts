@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it, spyOn } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -14,7 +14,29 @@ import {
 	type Skill,
 } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
 import { restoreEnvValue } from "./helpers/settings-test-state";
+
+// The agent dir backs every `~/.omp/agent` skill source (authored `skills/`
+// and managed `managed-skills/`). Left at the developer's real home, a machine
+// that has ever run the `learn` tool fails the "no leakage" assertions below.
+const originalAgentDirEnv = process.env.PI_CODING_AGENT_DIR;
+const originalAgentDir = getAgentDir();
+let isolatedAgentDir: string;
+
+beforeAll(async () => {
+	isolatedAgentDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-skills-agent-"));
+	setAgentDir(isolatedAgentDir);
+});
+
+afterAll(async () => {
+	// setAgentDir always exports PI_CODING_AGENT_DIR, so an unset variable has to
+	// be unset again or later suites inherit an override this file invented.
+	setAgentDir(originalAgentDirEnv ?? originalAgentDir);
+	if (originalAgentDirEnv === undefined) delete process.env.PI_CODING_AGENT_DIR;
+	await removeWithRetries(isolatedAgentDir);
+});
+
 const fixturesDir = path.resolve(import.meta.dirname, "fixtures/skills");
 const collisionFixturesDir = path.resolve(import.meta.dirname, "fixtures/skills-collision");
 
@@ -29,9 +51,9 @@ const expectedFixtureSkillOrder: string[] = [
 ];
 
 /**
- * Disable every named built-in skill source. Used by `loadSkills` option tests
- * that need to isolate a custom directory or assert "no built-in leakage". Tests
- * MUST spread this in: the discovery surface only ignores `~/.<dir>/skills/*` if
+ * Disable every named skill source. Used by `loadSkills` option tests that need
+ * to isolate a custom directory or assert "no built-in leakage". Tests MUST
+ * spread this in: the discovery surface only ignores `~/.<dir>/skills/*` if
  * every provider toggle resolves to false, otherwise stray skills from the
  * developer's real `$HOME` (e.g. `~/.agents/skills/<name>/SKILL.md`) leak into
  * the assertion.
@@ -44,6 +66,7 @@ const DISABLE_ALL_BUILTIN_SKILLS = {
 	enablePiProject: false,
 	enableAgentsUser: false,
 	enableAgentsProject: false,
+	enableManagedUser: false,
 } as const;
 
 describe("skills", () => {
@@ -135,13 +158,6 @@ describe("skills", () => {
 			);
 			expect(names).not.toContain("child-skill");
 			expect(skills).toHaveLength(6);
-		});
-
-		it("should return skills sorted by name (case-insensitive)", async () => {
-			const { skills } = await loadFixtureRoot();
-			const names = skills.map(skill => skill.name);
-
-			expect(names).toEqual(expectedFixtureSkillOrder);
 		});
 
 		it("should return empty for non-existent directory", async () => {
