@@ -17,6 +17,7 @@ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { VendorTool } from "@oh-my-pi/pi-coding-agent/harness/capture";
 import { harnessFacade, presentTool } from "@oh-my-pi/pi-coding-agent/harness/facade";
 import { harnessFacadeSpecs } from "@oh-my-pi/pi-coding-agent/harness/facades";
 import * as evalIndex from "@oh-my-pi/pi-coding-agent/eval";
@@ -276,22 +277,27 @@ afterEach(async () => {
 
 describe("vendor descriptions under a profile", () => {
 	it("presents the served capture's words for bound tools and facades, read at request time", () => {
-		const served: { text?: string } = {};
+		const served: { tool?: VendorTool } = {};
 		const read = stubTool("read", { examples: [{ caption: "omp example" }] });
-		const presented = presentTool(read, { wireName: "Read" }, () => served.text);
+		const presented = presentTool(read, { wireName: "Read" }, () => served.tool);
 		const spec = harnessFacadeSpecs("claude-code").find(entry => entry.wireName === "SendMessage");
 		if (!spec) throw new Error("no SendMessage facade");
-		const facade = harnessFacade(stubTool("hub"), spec, { settings: Settings.isolated() }, () => served.text);
+		const facade = harnessFacade(stubTool("hub"), spec, { settings: Settings.isolated() }, () => served.tool);
 
 		// Tools are presented before the capture loads: omp's own surface until then.
 		expect(presented.description).toBe("read");
+		expect(presented.parameters).toBe(read.parameters);
 		expect(presented.examples).toEqual([{ caption: "omp example" }]);
 		expect(facade.description).toBe(spec.description);
+		expect(facade.parameters).toBe(spec.parameters);
 
-		served.text = "Reads a file from the local filesystem.";
-		expect(presented.description).toBe(served.text);
+		const inputSchema = { type: "object", properties: { file_path: { type: "string" } }, required: ["file_path"] };
+		served.tool = { description: "Reads a file from the local filesystem.", inputSchema };
+		expect(presented.description).toBe(served.tool.description);
+		expect(presented.parameters).toBe(inputSchema);
 		expect(presented.customWireName).toBe("Read");
-		expect(facade.description).toBe(served.text);
+		expect(facade.description).toBe(served.tool.description);
+		expect(facade.parameters).toBe(inputSchema);
 		// The agent loop spreads own keys into the request copy; omp's examples
 		// would otherwise render into the vendor text.
 		expect({ ...presented }.examples).toBeUndefined();

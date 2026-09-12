@@ -3,6 +3,7 @@ import type { Static, TSchema, ToolNamespace } from "@oh-my-pi/pi-ai";
 import type { Settings } from "../config/settings";
 import { applyToolProxy } from "../extensibility/tool-proxy";
 import { nativeParams } from "./bridge";
+import type { VendorTool } from "./capture";
 import type { HarnessToolBinding } from "./manifest";
 
 export interface HarnessFacadeHost {
@@ -32,35 +33,40 @@ class PresentedTool implements AgentTool {
 	declare readonly namespace?: ToolNamespace;
 	declare readonly examples?: AgentTool["examples"];
 
-	constructor(tool: AgentTool, binding: HarnessToolBinding | undefined, vendorDescription: VendorDescription) {
+	constructor(tool: AgentTool, binding: HarnessToolBinding | undefined, vendor: VendorSurface) {
 		if (binding?.wireName !== undefined) this.customWireName = binding.wireName;
 		if (binding?.namespace !== undefined) this.namespace = { name: binding.namespace };
 		// Tools are presented when they mount, before the capture has loaded, so
-		// the vendor's words are read at request time rather than pinned here.
-		// omp's `examples` render into the wire description too, and the vendor
-		// client sends none.
+		// the vendor's declaration is read at request time rather than pinned
+		// here. Its schema validates the call too: the bridge behind `execute`
+		// already takes the vendor shape. omp's `examples` render into the wire
+		// description, and the vendor client sends none.
 		Object.defineProperty(this, "description", {
 			enumerable: true,
-			get: () => vendorDescription() ?? tool.description,
+			get: () => vendor()?.description ?? tool.description,
+		});
+		Object.defineProperty(this, "parameters", {
+			enumerable: true,
+			get: () => vendor()?.inputSchema ?? tool.parameters,
 		});
 		Object.defineProperty(this, "examples", {
 			enumerable: true,
-			get: () => (vendorDescription() === undefined ? tool.examples : undefined),
+			get: () => (vendor() === undefined ? tool.examples : undefined),
 		});
 		applyToolProxy(tool, this);
 	}
 }
 
-/** The vendor's description for the wire name a tool presents under, once a capture is served. */
-export type VendorDescription = () => string | undefined;
+/** The vendor's declaration for the wire name a tool presents under, once a capture is served. */
+export type VendorSurface = () => VendorTool | undefined;
 
 /** `tool` as a profile presents it: the manifest's wire identity plus the vendor's description. */
 export function presentTool(
 	tool: AgentTool,
 	binding: HarnessToolBinding | undefined,
-	vendorDescription: VendorDescription,
+	vendor: VendorSurface,
 ): AgentTool {
-	return new PresentedTool(tool, binding, vendorDescription);
+	return new PresentedTool(tool, binding, vendor);
 }
 
 export interface HarnessFacadeSpec<TWire extends TSchema = TSchema, TParams = unknown> {
@@ -100,7 +106,7 @@ export function harnessFacade(
 	target: AgentTool,
 	spec: HarnessFacadeSpec,
 	host: HarnessFacadeHost,
-	vendorDescription: VendorDescription = () => undefined,
+	vendor: VendorSurface = () => undefined,
 ): AgentTool {
 	const toParams = (args: unknown): unknown => nativeParams(spec.toParams(args as never, host) as object);
 	const approval = target.approval;
@@ -110,9 +116,11 @@ export function harnessFacade(
 		toNativeArgs: toParams,
 		label: target.label,
 		get description() {
-			return vendorDescription() ?? spec.description;
+			return vendor()?.description ?? spec.description;
 		},
-		parameters: spec.parameters,
+		get parameters() {
+			return vendor()?.inputSchema ?? spec.parameters;
+		},
 		loadMode: "essential",
 		...(spec.namespace ? { namespace: spec.namespace } : {}),
 		...(spec.intent ? { intent: spec.intent as AgentTool["intent"] } : {}),

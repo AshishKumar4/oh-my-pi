@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
-import type { Model } from "@oh-my-pi/pi-ai";
+import type { Model, TJsonSchema } from "@oh-my-pi/pi-ai";
 import {
 	claudeCodeBillingHeaderPrefix,
 	claudeCodeEntrypoint,
@@ -9,7 +9,7 @@ import {
 } from "@oh-my-pi/pi-ai/providers/claude-code-fingerprint";
 import { type HarnessProfile, resolveHarnessProfile } from "@oh-my-pi/pi-catalog/compat/harness";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import { getHarnessCacheDir, isEnoent, logger } from "@oh-my-pi/pi-utils";
+import { getHarnessCacheDir, isEnoent, isRecord, logger } from "@oh-my-pi/pi-utils";
 
 export const HARNESS_CAPTURE_SCHEMA = 1;
 
@@ -55,12 +55,18 @@ const captureSchema = type({
 
 export type HarnessCapture = typeof captureSchema.infer;
 
+/** One tool as the vendor client declared it. */
+export interface VendorTool {
+	readonly description: string;
+	readonly inputSchema?: TJsonSchema;
+}
+
 export interface HarnessPrompt {
 	readonly text: string;
 	readonly clientVersion: string;
 	readonly path: string;
-	/** Vendor tool description by wire name; empty for captures that recorded names only. */
-	readonly descriptions: Readonly<Record<string, string>>;
+	/** Vendor declarations by wire name; empty for captures that recorded names only. */
+	readonly tools: Readonly<Record<string, VendorTool>>;
 }
 
 type CaptureProjection =
@@ -70,7 +76,7 @@ type CaptureProjection =
 			readonly clientVersion: string;
 			readonly capturedAt: number;
 			readonly model?: string;
-			readonly descriptions: Readonly<Record<string, string>>;
+			readonly tools: Readonly<Record<string, VendorTool>>;
 	  }
 	| { readonly ok: false; readonly reason: string };
 
@@ -146,16 +152,17 @@ export function projectHarnessCapture(profile: HarnessProfile, raw: unknown): Ca
 	}
 	if (blocks.length === 0) return { ok: false, reason: "instructions-empty" };
 	const capturedAt = capture.capturedAt === undefined ? Number.NaN : Date.parse(capture.capturedAt);
-	const descriptions: Record<string, string> = {};
-	for (const declaration of capture.declarations ?? []) {
-		if (declaration.description.trim().length > 0) descriptions[declaration.name] = declaration.description;
+	const tools: Record<string, VendorTool> = {};
+	for (const { name, description, input_schema } of capture.declarations ?? []) {
+		if (description.trim().length === 0) continue;
+		tools[name] = { description, ...(isRecord(input_schema) ? { inputSchema: input_schema } : {}) };
 	}
 	return {
 		ok: true,
 		text: blocks.join("\n\n"),
 		clientVersion: capture.clientVersion,
 		capturedAt: Number.isNaN(capturedAt) ? 0 : capturedAt,
-		descriptions,
+		tools,
 		...(capture.model === undefined ? {} : { model: capture.model }),
 	};
 }
@@ -275,7 +282,7 @@ async function readHarnessPrompt(profile: HarnessProfile, modelId?: string): Pro
 			continue;
 		}
 		const text = alignModelIdentity(projection.text, modelId);
-		best = { text, clientVersion: projection.clientVersion, path: file, descriptions: projection.descriptions };
+		best = { text, clientVersion: projection.clientVersion, path: file, tools: projection.tools };
 		bestCapturedAt = projection.capturedAt;
 		bestExact = exact;
 	}

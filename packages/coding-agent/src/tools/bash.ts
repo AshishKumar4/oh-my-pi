@@ -336,15 +336,15 @@ const bashSchemaWithAsync = type({
 	"async?": type("boolean").describe("run in background"),
 });
 
-// Vendor Bash.timeout is milliseconds (max 600000); omp keeps seconds here. Resumed
-// sessions carry seconds-valued Bash calls in history, and in-context history beats a
-// schema description, so a ms bridge silently pinned every deadline to the 1s clamp floor.
+// Claude Code's own `Bash` shape. A served capture presents the vendor's exact
+// declaration instead; this mirror is the schema while no capture is served, so
+// both agree on the field set and on `timeout` being milliseconds.
 const claudeCodeBashSchema = type({
-	command: type("string").describe("command to execute"),
-	"timeout?": type("number").describe(BASH_TIMEOUT_DESCRIPTION),
-	"description?": type("string").describe("what this command does, in plain words"),
-	"run_in_background?": type("boolean").describe("run in background"),
-	"dangerouslyDisableSandbox?": type("boolean").describe("not supported"),
+	command: type("string").describe("The command to execute"),
+	"timeout?": type("number").describe("Optional timeout in milliseconds (max 600000)"),
+	"description?": type("string").describe("Clear, concise description of what this command does in 5-10 words"),
+	"run_in_background?": type("boolean").describe("Set to true to run this command in the background"),
+	"dangerouslyDisableSandbox?": type("boolean").describe("Set this to true to dangerously override sandbox mode"),
 });
 
 type BashToolSchema = typeof bashSchemaBase | typeof bashSchemaWithAsync | typeof claudeCodeBashSchema;
@@ -360,7 +360,8 @@ const BASH_BRIDGES: HarnessBridges<BashToolInput, typeof claudeCodeBashSchema> =
 			}
 			return {
 				command: args.command,
-				...(args.timeout !== undefined ? { timeout: args.timeout } : {}),
+				// Vendor milliseconds to omp seconds; the clamp floor keeps a sub-second value alive.
+				...(args.timeout !== undefined ? { timeout: Math.ceil(args.timeout / 1000) } : {}),
 				...(args.run_in_background !== undefined ? { async: args.run_in_background } : {}),
 			};
 		},

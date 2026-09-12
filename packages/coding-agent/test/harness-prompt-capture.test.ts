@@ -140,7 +140,7 @@ describe("harness prompt custody", () => {
 		const { systemPrompt } = await build("claude-code");
 
 		const served = servedHarnessPrompt(getBundledModel("anthropic", "claude-opus-5"));
-		expect(served?.descriptions).toEqual({ Read: "Reads a file from the local filesystem." });
+		expect(served?.tools).toEqual({ Read: { description: "Reads a file from the local filesystem." } });
 		expect(systemPrompt.join("\n")).not.toContain("<critical>");
 		expect((await build()).systemPrompt.join("\n")).toContain("<critical>");
 	});

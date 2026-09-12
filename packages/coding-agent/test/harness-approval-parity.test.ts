@@ -131,16 +131,16 @@ describe("approval parity under a harness rename", () => {
 		}
 	});
 
-	it("presents Claude Code's Bash fields under the profile and keeps timeout in omp seconds", async () => {
+	it("presents Claude Code's Bash fields under the profile and bridges timeout from milliseconds", async () => {
 		const tool = new BashTool(toolSession([], CLAUDE_CODE_MODEL));
 		const native = new BashTool(toolSession());
 		const wire = validateArgs(tool, {
 			type: "toolCall",
 			id: "c",
 			name: "Bash",
-			arguments: { command: "echo hi", timeout: 900, description: "Print hi", run_in_background: false },
+			arguments: { command: "echo hi", timeout: 900_000, description: "Print hi", run_in_background: false },
 		});
-		expect(wire).toMatchObject({ command: "echo hi", timeout: 900 });
+		expect(wire).toMatchObject({ command: "echo hi", timeout: 900_000 });
 		const schemaOf = (candidate: BashTool) =>
 			toolWireSchema({ name: "bash", description: "", parameters: candidate.parameters }) as {
 				properties: Record<string, { description?: string }>;
@@ -153,10 +153,10 @@ describe("approval parity under a harness rename", () => {
 			"run_in_background",
 			"dangerouslyDisableSandbox",
 		]);
-		expect(schema.properties.timeout?.description).toMatch(/timeout in seconds/);
-		expect(schema.properties.timeout?.description).toBe(schemaOf(native).properties.timeout?.description);
+		expect(schema.properties.timeout?.description).toMatch(/milliseconds/);
+		expect(schemaOf(native).properties.timeout?.description).toMatch(/seconds/);
 		expect(tool.intent({ command: "echo hi", description: "Print hi" })).toBe("Print hi");
-		const result = await tool.execute("c", { command: "echo hi", timeout: 900 });
+		const result = await tool.execute("c", { command: "echo hi", timeout: 900_000 });
 		expect(result.isError).toBeFalsy();
 		expect(result.details?.timeoutSeconds).toBe(900);
 		expect(result.details?.requestedTimeoutSeconds).toBeUndefined();
