@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Settings panel gains a Fusion tab, and the status line shows the lead/sidekick pair (`<lead> ⚡ <sidekick>`) when Fusion is enabled.
+
 ### Fixed
 
 - MCP HTTP reconnects now release obsolete tool generations instead of growing session memory on every reconnect ([#11784](https://github.com/can1357/oh-my-pi/issues/11784)).

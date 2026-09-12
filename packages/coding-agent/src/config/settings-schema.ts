@@ -163,6 +163,7 @@ export type SettingTab =
 	| "shell"
 	| "tools"
 	| "tasks"
+	| "fusion"
 	| "providers";
 
 /** Tab display metadata - icon is resolved via theme.symbol() */
@@ -179,6 +180,7 @@ export const SETTING_TABS: SettingTab[] = [
 	"shell",
 	"tools",
 	"tasks",
+	"fusion",
 	"providers",
 ];
 
@@ -193,6 +195,7 @@ export const TAB_METADATA: Record<SettingTab, { label: string; icon: `tab.${stri
 	shell: { label: "Shell", icon: "tab.shell" },
 	tools: { label: "Tools", icon: "tab.tools" },
 	tasks: { label: "Tasks", icon: "tab.tasks" },
+	fusion: { label: "Fusion", icon: "tab.fusion" },
 	providers: { label: "Providers", icon: "tab.providers" },
 };
 
@@ -233,6 +236,7 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 		"Developer",
 	],
 	tasks: ["Modes", "Subagents", "Isolation", "Commands & Skills"],
+	fusion: ["Fusion"],
 	providers: ["Services", "Fireworks", "Tiny Model", "Protocol", "Timeouts", "Privacy"],
 };
 
@@ -5468,6 +5472,44 @@ export const SETTINGS_SCHEMA = {
 			group: "Commands & Skills",
 			label: "OpenCode Project Commands",
 			description: "Load commands from .opencode/commands/",
+		},
+	},
+
+	// ────────────────────────────────────────────────────────────────────────
+	// Fusion
+	// ────────────────────────────────────────────────────────────────────────
+
+	"fusion.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "fusion",
+			group: "Fusion",
+			label: "Fusion",
+			description: "Pair the lead model with a sidekick model",
+		},
+	},
+
+	"fusion.sidekickModel": {
+		type: "string",
+		default: "devin/swe-2",
+		ui: {
+			tab: "fusion",
+			group: "Fusion",
+			label: "Sidekick Model",
+			description: "Sidekick model (provider/model-id)",
+		},
+	},
+
+	"fusion.sidekickThinking": {
+		type: "enum",
+		values: [...THINKING_EFFORTS, AUTO_THINKING],
+		default: "medium",
+		ui: {
+			tab: "fusion",
+			group: "Fusion",
+			label: "Sidekick Thinking",
+			description: "Reasoning depth for the sidekick model",
 		},
 	},
 
