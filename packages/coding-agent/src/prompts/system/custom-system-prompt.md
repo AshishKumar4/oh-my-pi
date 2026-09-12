@@ -39,6 +39,7 @@ If a skill applies, you MUST read `skill://<name>` before proceeding.
 {{/list}}
 </skills>
 {{/if}}
+{{> xdevDevices}}
 {{#if alwaysApplyRules.length}}
 {{#each alwaysApplyRules}}
 {{content}}

@@ -500,6 +500,24 @@ export type ToolName = BuiltinToolName;
 /**
  * Create tools from BUILTIN_TOOLS registry.
  */
+/** Memory tools every backend with recall mounts; `memory_edit` is Mnemopi-only. */
+const MEMORY_BACKEND_TOOL_NAMES = ["recall", "retain", "reflect"];
+
+/**
+ * Builtins `createTools` force-includes from settings rather than the caller's
+ * list. A session that names its tools explicitly still gets these activated,
+ * else the registry carries a tool the prompt tells the model to use and the
+ * active set never offers.
+ */
+export const SESSION_MANAGED_BUILTIN_TOOL_NAMES = [
+	"manage_skill",
+	"learn",
+	"context_notes",
+	"new_context",
+	...MEMORY_BACKEND_TOOL_NAMES,
+	"memory_edit",
+];
+
 export async function createTools(session: ToolSession, toolNames?: string[]): Promise<Tool[]> {
 	const restrictToolNames = session.restrictToolNames === true;
 	const includeYield = session.requireYieldTool === true;
@@ -593,7 +611,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 			requestedTools.push("ast_edit");
 		}
 		if (["hindsight", "mnemopi"].includes(session.settings.get("memory.backend") ?? "")) {
-			for (const name of ["recall", "retain", "reflect"]) {
+			for (const name of MEMORY_BACKEND_TOOL_NAMES) {
 				if (!requestedTools.includes(name)) requestedTools.push(name);
 			}
 		}
@@ -656,7 +674,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 				!restrictToolNames && session.enableIrc !== false && isIrcEnabled(session.settings, session.taskDepth ?? 0)
 			);
 		}
-		if (name === "retain" || name === "recall" || name === "reflect") {
+		if (MEMORY_BACKEND_TOOL_NAMES.includes(name)) {
 			return ["hindsight", "mnemopi"].includes(session.settings.get("memory.backend") ?? "");
 		}
 		if (name === "memory_edit") return session.settings.get("memory.backend") === "mnemopi";

@@ -35,6 +35,7 @@ import defaultPersonality from "./prompts/system/personalities/default.md" with 
 import friendlyPersonality from "./prompts/system/personalities/friendly.md" with { type: "text" };
 import pragmaticPersonality from "./prompts/system/personalities/pragmatic.md" with { type: "text" };
 import projectPromptTemplate from "./prompts/system/project-prompt.md" with { type: "text" };
+import xdevDevicesTemplate from "./prompts/system/xdev-devices.md" with { type: "text" };
 import systemPromptTemplate from "./prompts/system/system-prompt.md" with { type: "text" };
 import { normalizeConcurrencyLimit } from "./task/parallel";
 import { type ActiveRepoContext, resolveActiveRepoContext } from "./utils/active-repo-context";
@@ -688,6 +689,8 @@ export interface BuildSystemPromptResult {
 	xdevCatalogNames?: readonly string[];
 }
 
+prompt.registerPartial("xdevDevices", xdevDevicesTemplate);
+
 /** Build the system prompt with tools, guidelines, and context */
 export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}): Promise<BuildSystemPromptResult> {
 	if ($env.NULL_PROMPT === "true") {
@@ -1067,8 +1070,8 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		systemPrompt.push(activeRepoContextPrompt);
 	}
 
-	// The xd:// protocol section (with its device catalog) is only rendered by the
-	const xdevCatalogNames =
-		!usesCustomTemplate && xdevTools.length > 0 ? xdevTools.map(mounted => mounted.name) : undefined;
+	// Both templates render the xd:// protocol section, so a mounted device is
+	// always reachable and its catalog is already announced.
+	const xdevCatalogNames = xdevTools.length > 0 ? xdevTools.map(mounted => mounted.name) : undefined;
 	return { systemPrompt, xdevCatalogNames };
 }

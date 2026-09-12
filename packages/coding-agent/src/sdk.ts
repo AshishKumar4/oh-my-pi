@@ -227,6 +227,7 @@ import {
 	ReadTool,
 	releaseComputerSessionsForOwner,
 	resolveMountedXdevExecutable,
+	SESSION_MANAGED_BUILTIN_TOOL_NAMES,
 	supportsExternalThinking,
 	type Tool,
 	type ToolSession,
@@ -3252,7 +3253,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// active set consistent with that registry decision, using built-in
 		// provenance so same-named extension tools are never force-activated.
 		if (!restrictToolNames && explicitlyRequestedToolNames) {
-			for (const name of ["manage_skill", "learn", "context_notes", "new_context"]) {
+			for (const name of SESSION_MANAGED_BUILTIN_TOOL_NAMES) {
 				if (builtInToolNames.includes(name) && !explicitlyRequestedToolNames.includes(name)) {
 					explicitlyRequestedToolNames.push(name);
 				}
