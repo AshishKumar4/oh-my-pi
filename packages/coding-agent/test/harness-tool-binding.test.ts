@@ -96,10 +96,10 @@ function createSession(model: Model): AgentSession {
 	return session;
 }
 
-function presented(session: AgentSession, name: string): { wireName?: string; namespace?: string } {
+function presented(session: AgentSession, name: string): { wireName?: string; namespace?: string; persistAs?: string } {
 	const found = session.agent.state.tools.find(value => value.name === name);
 	if (!found) throw new Error(`${name} is not on the model-visible surface`);
-	return { wireName: found.customWireName, namespace: found.namespace?.name };
+	return { wireName: found.customWireName, namespace: found.namespace?.name, persistAs: found.persistAs };
 }
 
 describe("harness tool binding through the session surface", () => {
@@ -108,7 +108,9 @@ describe("harness tool binding through the session surface", () => {
 
 		expect(presented(session, "bash").wireName).toBe("Bash");
 		expect(presented(session, "read").wireName).toBe("Read");
-		expect(presented(session, "task").wireName).toBe("Agent");
+		// Delegation is a facade from the first request: `Agent` stands in for `task`.
+		expect(session.agent.state.tools.some(value => value.name === "task")).toBe(false);
+		expect(presented(session, "Agent").persistAs).toBe("task");
 		expect(presented(session, "grep").wireName).toBeUndefined();
 		expect(presented(session, "bash").namespace).toBeUndefined();
 	});
@@ -116,7 +118,7 @@ describe("harness tool binding through the session surface", () => {
 	test("a codex model groups delegation into collaboration and renames only its own bridge", () => {
 		const session = createSession(CODEX_MODEL);
 
-		expect(presented(session, "task").namespace).toBe("collaboration");
+		expect(presented(session, "spawn_agent")).toMatchObject({ namespace: "collaboration", persistAs: "task" });
 		expect(presented(session, "hub").namespace).toBe("collaboration");
 		expect(presented(session, "read").namespace).toBeUndefined();
 		expect(presented(session, "eval").wireName).toBe("exec");
@@ -134,13 +136,17 @@ describe("harness tool binding through the session surface", () => {
 
 	test("a mid-session model change moves the surface with it, with no rebuild in between", async () => {
 		const session = createSession(CLAUDE_CODE_MODEL);
-		expect(presented(session, "task")).toEqual({ wireName: "Agent", namespace: undefined });
+		expect(presented(session, "Agent")).toEqual({ wireName: undefined, namespace: undefined, persistAs: "task" });
 		expect(presented(session, "bash").wireName).toBe("Bash");
 
 		await session.setModel(CODEX_MODEL);
 
 		expect(session.agent.state.tools.some(value => value.name === "task")).toBe(false);
-		expect(presented(session, "spawn_agent")).toEqual({ wireName: undefined, namespace: "collaboration" });
+		expect(presented(session, "spawn_agent")).toEqual({
+			wireName: undefined,
+			namespace: "collaboration",
+			persistAs: "task",
+		});
 		expect(presented(session, "bash").wireName).toBeUndefined();
 		expect(presented(session, "eval").wireName).toBe("exec");
 	});

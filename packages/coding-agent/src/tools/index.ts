@@ -638,7 +638,9 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		}
 	}
 	const allTools: Record<string, ToolFactory> = { ...BUILTIN_TOOLS, ...HIDDEN_TOOLS };
+	const disabledTools = new Set(session.settings.get("tools.disabled"));
 	const isToolAllowed = (name: string) => {
+		if (disabledTools.has(name)) return false;
 		// Never in the default set. Explicitly activatable while goal.enabled and
 		// no goal record exists yet — /guided-goal enables it so the agent can
 		// finish the interview with `goal create`, which turns goal mode on. Once

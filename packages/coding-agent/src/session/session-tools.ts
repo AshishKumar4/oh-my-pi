@@ -312,12 +312,10 @@ export class SessionTools {
 		for (const tool of host.agent.state.tools) this.#enabledToolNames.add(tool.name);
 		for (const name of this.#xdev?.mountedNames ?? []) this.#enabledToolNames.add(name);
 		this.#promptModelKey = this.#currentPromptModelKey();
-		// The construction slate carries the profile's wire identities from the
-		// start; facades join at the first applied selection.
-		const profile = this.#harnessProfile();
-		if (profile !== undefined) {
-			host.agent.setTools(host.agent.state.tools.map(tool => this.#present(tool, profile)));
-		}
+		// The construction slate is presented the same way every later selection
+		// is, so a session that never applies one (headless `-p`) still carries
+		// the profile's wire identities and facades from its first request.
+		if (this.#harnessProfile() !== undefined) this.#representActiveTools();
 	}
 
 	/** Mutable registry shared with controller hosts that inspect available tools. */

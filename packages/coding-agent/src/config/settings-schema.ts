@@ -4816,6 +4816,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"tools.disabled": {
+		type: "array",
+		default: [] as string[],
+		ui: {
+			tab: "tools",
+			group: "Discovery & MCP",
+			label: "Disabled Tools",
+			description: "Built-in tools never mounted, by name (e.g. glob, grep). Applies to every session and profile.",
+		},
+	},
+
 	"tools.xdevDocs": {
 		type: "enum",
 		values: ["inline", "builtins", "catalog"] as const,
