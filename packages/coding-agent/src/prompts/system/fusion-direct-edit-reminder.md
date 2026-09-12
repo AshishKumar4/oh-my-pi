@@ -1,0 +1,3 @@
+<system-reminder>
+You made a direct edit yourself instead of delegating to Sidekick. This is a reminder that implementation and verification are to be delegated by default. ONLY implement a step yourself if it's trivially small (1-2 turns){{#if browserEnabled}}, {{else}} or {{/if}}correctness-critical (data analysis and measurement, eval harnesses, data-pipeline configuration — the authoring and the checking stay with you regardless of size; mechanical execution of a recipe you fully authored can still be handed off){{#if browserEnabled}}, or complex rendered-browser work (dashboards, panels, visual reports, multi-step GUI flows — build and judge the rendered result yourself){{/if}}.
+</system-reminder>
